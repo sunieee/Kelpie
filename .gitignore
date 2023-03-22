@@ -14,8 +14,11 @@ major_revision/
 ._*
 .Spotlight-V100
 .Trashes
+test.log
 ehthumbs.db
 Thumbs.db
 
 output.log
 results/MOF-3000
+relevance.csv
+prelimentary.csv
