@@ -20,5 +20,6 @@ Thumbs.db
 
 output.log
 results/MOF-3000
+results/FB15k-237
 relevance.csv
 prelimentary.csv

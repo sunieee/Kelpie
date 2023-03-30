@@ -253,7 +253,6 @@ class ConvE(Model):
 
         if sigmoid:
             x = torch.sigmoid(x)
-
         return x
     
     def get_tail_set(self, samples, split=' '):
@@ -336,10 +335,11 @@ class ConvE(Model):
         batch = samples
     
         # hack一下，使用完全预测方法，把非尾实体的置为0
-        entity_embeddings, _ = self.get_embedding()
-        other = list(set(range(entity_embeddings.shape[0])) - set(self.get_tail_set(batch)))
-        other += ignore_ids
-        other.sort()
+        if self.tail_restrain:
+            entity_embeddings, _ = self.get_embedding()
+            other = list(set(range(entity_embeddings.shape[0])) - set(self.get_tail_set(batch)))
+            other += ignore_ids
+            other.sort()
         # print("len samples:", len(batch), "len tails:", len(self.get_tail_set(batch)), "len others:", len(other), end='\t')
         
         with torch.no_grad():
@@ -358,7 +358,8 @@ class ConvE(Model):
 
                 # set to 0.0 all the predicted values for all the correct tails for that Head-Rel couple
                 all_scores[sample_number, tails_to_filter] = 0.0
-                all_scores[sample_number, other] = 0.0
+                if self.tail_restrain:
+                    all_scores[sample_number, other] = 0.0
                 # re-set the predicted value for that tail to the original value
                 all_scores[sample_number, tail_id] = target_tail_score
 

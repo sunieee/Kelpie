@@ -64,7 +64,7 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
         samples_number = len(samples_with_relevance)
         print('\tvalid rules with length 1: ', samples_number)
         
-        all_rules_with_relevance += [([x], y) for (x, y) in samples_with_relevance]
+        all_rules_with_relevance += samples_with_relevance # [([x], y) for (x, y) in samples_with_relevance]
         
         if len(all_rules_with_relevance) == 0:
             print('\tNo valid rules with length 1')

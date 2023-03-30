@@ -62,7 +62,7 @@ def path2str(dataset, path):
 
 
 def paths2str(dataset, paths):
-    return "/".join([path2str(dataset, x) for x in paths])
+    return "|".join([path2str(dataset, x) for x in paths])
 
 
 def strfy(entity_ids):
