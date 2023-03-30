@@ -82,7 +82,8 @@ class PostTrainingEngine(ExplanationEngine):
         rank_worsening = metrics[f'{pt}_rank'] - metrics[f'{base}_rank']
         score_worsening = metrics[f'{pt}_score'] - metrics[f'{base}_score'] if self.model.is_minimizer() else metrics[f'{base}_score'] - metrics[f'{pt}_score']
         # note: the formulation is very different from the addition one
-        return rd(float(rank_worsening + np.tanh(score_worsening)))
+        # return rd(float(rank_worsening + np.tanh(score_worsening)))
+        return rd(score_worsening * 100)
 
 
     def removal_relevance(self,
@@ -175,11 +176,11 @@ class PostTrainingEngine(ExplanationEngine):
 
         # print(self.original_sample, kelpie_sample_to_predict)
 
-        kelpie_model.summary('before post_train')
+        # kelpie_model.summary('before post_train')
         # base_pt_model = kelpie_model
         base_pt_model = self.post_train(kelpie_model_to_post_train=kelpie_model,
                                         kelpie_train_samples=self.kelpie_dataset.kelpie_train_samples) # type: KelpieModel
-        kelpie_model.summary('after post_train')
+        # kelpie_model.summary('after post_train')
 
         # record the base embeddings of head and tail
         # h, t = self.original_sample[0], self.original_sample[2]
@@ -227,11 +228,11 @@ class PostTrainingEngine(ExplanationEngine):
         self.kelpie_dataset.remove_training_samples(original_samples_to_remove)
 
         # post-train a kelpie model on the dataset that has undergone the removal
-        kelpie_model.summary('before post_train')
+        # kelpie_model.summary('before post_train')
         # cur_kelpie_model = kelpie_model
         cur_kelpie_model = self.post_train(kelpie_model_to_post_train=kelpie_model,
                                            kelpie_train_samples=self.kelpie_dataset.kelpie_train_samples)  # type: KelpieModel
-        kelpie_model.summary('after post_train')
+        # kelpie_model.summary('after post_train')
 
         # undo the removal, to allow the following iterations of this loop
         self.kelpie_dataset.undo_last_training_samples_removal()
@@ -280,8 +281,8 @@ class PostTrainingEngine(ExplanationEngine):
         model.eval()
         head_id, relation_id, tail_id = sample
 
-        # check how the model performs on the sample to explain
-        all_scores = model.all_scores(numpy.array([sample]), sigmoid=False).detach().cpu().numpy()[0]
+        # check how the model performs on the sample to explain   , sigmoid=False
+        all_scores = model.all_scores(numpy.array([sample])).detach().cpu().numpy()[0]
 
         print('original target score:', all_scores[[self.original_sample[0], self.original_sample[2]]])
 
