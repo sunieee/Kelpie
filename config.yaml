@@ -115,8 +115,8 @@ FB15k-237:
     D: 200
     LR: 0.003
     B: 128
-    Ep: 1000
-    REp: 3
+    Ep: 2  # 1000
+    REp: 10
     Decay: 0.995
     epsilon: 0.1
     Drop:

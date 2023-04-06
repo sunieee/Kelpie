@@ -217,11 +217,11 @@ else:
 
 model = TargetModel(dataset=dataset, hyperparameters=hyperparameters, init_random=True)
 model.to('cuda')
-if os.path.exists(args.model_path):
-    ech(f'loading models from path: {args.model_path}')
-    model.load_state_dict(torch.load(args.model_path))
-else:
-    ech(f'model does not exists! {args.model_path}')
+# if os.path.exists(args.model_path):
+#     ech(f'loading models from path: {args.model_path}')
+#     model.load_state_dict(torch.load(args.model_path))
+# else:
+#     ech(f'model does not exists! {args.model_path}')
 
 # ---------------------train---------------------
 if int(args.run[0]):
@@ -309,8 +309,67 @@ def print_facts(rule_samples_with_relevance):
 
 fact = ('/m/01mvth',  '/people/person/nationality', '/m/09c7w0')
 
+
+def retrain_whole_graph(fact_to_explain, facts):
+    model = TargetModel(dataset=dataset, hyperparameters=hyperparameters, init_random=True)
+    model.to('cuda')
+    ech("Re-Training model...")
+    t = time.time()
+    samples = dataset.train_samples.copy()
+    ids = []
+    for fact in facts:
+        sample = dataset.fact_to_sample(fact)
+        sample = dataset.original_sample(sample)
+        print(dataset.train_to_filter[(sample[0], sample[1])])
+        ids.append(samples.tolist().index(list(sample)))
+
+    print('delete rows:', ids)
+    np.delete(samples, ids, axis=0)
+    optimizer = Optimizer(model=model, hyperparameters=hyperparameters)
+    optimizer.train(train_samples=samples, evaluate_every=10, #10 if args.method == "ConvE" else -1,
+                    save_path=args.model_path,
+                    valid_samples=dataset.valid_samples)
+    print(f"Train time: {time.time() - t}")
+
+    sample_to_explain = dataset.fact_to_sample(fact_to_explain)
+    model.eval()
+    all_scores = model.all_scores(numpy.array([sample_to_explain])).detach().cpu().numpy()[0]
+    return all_scores[sample_to_explain[-1]]
+
+
+relevance_df = pd.DataFrame(columns=['facts', 'length', 'base', 'approx', 'truth', 'eps'])
+
+def get_real_relevance(fact_to_explain, path, appr_relevance, base_score):
+    import re
+    nodes = re.split('->|-', path)
+    head = nodes[:3]
+    tail = nodes[-3:]
+    path = [nodes[i:i+3] for i in range(0, len(nodes), 2)][:-1]
+    print(head, tail, path)
+    relevance = []
+    for i, facts in enumerate([[head], [tail], path]):
+        score = retrain_whole_graph(fact_to_explain, facts)
+        truth = base_score - score
+        relevance.append(score)
+        relevance_df.loc[len(relevance_df)] = {
+            'facts': facts,
+            'length': len(facts),
+            'base': base_score,
+            'approx': appr_relevance[i],
+            'truth': truth,
+            'eps': np.abs(appr_relevance[i] / truth - 1) 
+        }
+    relevance_df.to_csv('relevance_eps.csv')
+    return relevance
+
+
 def get_max_explaination(fact):
     head, relation, tail = fact
+    sample_to_explain = dataset.fact_to_sample(fact)
+    all_scores = model.all_scores(numpy.array([sample_to_explain])).detach().cpu().numpy()[0]
+    base_score = all_scores[sample_to_explain[-1]]
+    print('base_score:', base_score)
+
     print("Explaining fact on " + str(
         len(testing_facts)) + ": " + triple2str(fact))
     head_id, relation_id, tail_id = dataset.get_id_for_entity_name(head), \
@@ -320,11 +379,18 @@ def get_max_explaination(fact):
 
     rule_samples_with_relevance = kelpie.explain_necessary(sample_to_explain=sample_to_explain,
                                                             perspective="head",
-                                                            num_promising_samples=args.prefilter_threshold)
+                                                            num_promising_samples=args.prefilter_threshold,
+                                                            l_max = 1)
     print_line(f'output of fact {triple2str(fact)}')
-    print_facts(rule_samples_with_relevance)
+    for k, v in rule_samples_with_relevance:
+        if len(k.split('|')) == 1: 
+            print('!' * 10, 'rule:', k)
+            relevance = get_real_relevance(fact, k, v, base_score)
+            print('post-train relevance:', v)
+            print('retrain relevance:', relevance)
 
-get_max_explaination(fact)
+for fact in testing_facts:
+    get_max_explaination(fact)
 
 ech('explaination output:')
 end_time = time.time()

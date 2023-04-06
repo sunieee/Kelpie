@@ -247,6 +247,9 @@ class Dataset:
             #         st = time.time()
             #         print(len(list(self.all_simple_paths(t[0], t[1]))))
             #         print(time.time() - st)
+    
+    def train_samples_str(self):
+        return [f'{t[0]},{t[1]},{t[2]}' for t in self.train_samples]
 
     def _read_triples(self, triples_path: str, separator="\t"):
         """
@@ -323,6 +326,11 @@ class Dataset:
         output[:, 1] += self.num_direct_relations
 
         return output
+    
+    def original_sample(self, sample):
+        if sample[1] >= self.num_direct_relations:
+            return (sample[-1], sample[1] - self.num_direct_relations, sample[0])
+        return sample
 
 
     def _compute_relation_2_type(self):

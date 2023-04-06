@@ -109,7 +109,8 @@ class Kelpie:
     def explain_necessary(self,
                           sample_to_explain: Tuple[Any, Any, Any],
                           perspective: str,
-                          num_promising_samples: int = 0):
+                          num_promising_samples: int = 0,
+                          l_max: int = 4):
         """
         This method extracts necessary explanations for a specific sample,
         from the perspective of either its head or its tail.
@@ -143,7 +144,8 @@ class Kelpie:
                                                                     relevance_threshold=self.relevance_threshold,
                                                                     max_explanation_length=self.max_explanation_length)
         
-        explanations_with_relevance = explanation_builder.build_explanations(samples_to_remove=most_promising_samples)
+        explanations_with_relevance = explanation_builder.build_explanations(samples_to_remove=most_promising_samples,
+                                                                            l_max=l_max)
         
         for rule, relevance in explanations_with_relevance:
             relevance_df.loc[len(relevance_df)] = {

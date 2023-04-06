@@ -82,12 +82,6 @@ parser.add_argument("--entities_to_convert",
                     type=str,
                     help="path of the file with the entities to convert (only used by baselines)")
 
-parser.add_argument("--mode",
-                    type=str,
-                    default="sufficient",
-                    choices=["sufficient", "necessary"],
-                    help="The explanation mode")
-
 parser.add_argument("--relevance_threshold",
                     type=float,
                     default=None,
@@ -325,27 +319,11 @@ for i, fact in enumerate(testing_facts):
     sample_to_explain = (head_id, relation_id, tail_id)
     n_samples += 1
 
-    if args.mode == "sufficient":
-        rule_samples_with_relevance, \
-        entities_to_convert_ids = kelpie.explain_sufficient(sample_to_explain=sample_to_explain,
+    rule_samples_with_relevance = kelpie.explain_necessary(sample_to_explain=sample_to_explain,
                                                             perspective="head",
-                                                            num_promising_samples=args.prefilter_threshold,
-                                                            num_entities_to_convert=args.coverage)
-
-        if entities_to_convert_ids is None or len(entities_to_convert_ids) == 0:
-            continue
-        entities_to_convert = [dataset.entity_id_2_name[x] for x in entities_to_convert_ids]
-
-        print_line(f'output of fact {triple2str(fact)}')
-        print_line('\tentities to convert: ' + ", ".join(entities_to_convert))
-        print_facts(rule_samples_with_relevance)
-
-    elif args.mode == "necessary":
-        rule_samples_with_relevance = kelpie.explain_necessary(sample_to_explain=sample_to_explain,
-                                                               perspective="head",
-                                                               num_promising_samples=args.prefilter_threshold)
-        print_line(f'output of fact {triple2str(fact)}')
-        print_facts(rule_samples_with_relevance)
+                                                            num_promising_samples=args.prefilter_threshold)
+    print_line(f'output of fact {triple2str(fact)}')
+    print_facts(rule_samples_with_relevance)
 
 ech('explaination output:')
 end_time = time.time()

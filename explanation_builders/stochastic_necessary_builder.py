@@ -49,7 +49,8 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
 
     def build_explanations(self,
                            samples_to_remove: list,
-                           top_k: int = 100):
+                           top_k: int = 100,
+                           l_max: int = 4):
 
         all_rules_with_relevance = []
 
@@ -82,7 +83,7 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
 
         # stop if you have too few samples (e.g. if you have only 2 samples, you can not extract rules of length 3)
         # or if you get to the length cap
-        while cur_rule_length <= samples_number and cur_rule_length <= self.length_cap:
+        while cur_rule_length <= samples_number and cur_rule_length <= self.length_cap and cur_rule_length < l_max:
             rule_2_relevance = self.extract_rules_with_length(samples_to_remove=samples_to_remove,
                                                               length=cur_rule_length,
                                                               sample_2_relevance=sample_2_relevance)

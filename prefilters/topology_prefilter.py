@@ -103,7 +103,6 @@ class TopologyPreFilter(PreFilter):
 
         start_entity, end_entity = (head, tail) if perspective == "head" else (tail, head)
 
-        # print('relation_path', global_dic['args'].relation_path)
         if global_dic['args'].relation_path:
             rel_count = self.dataset.num_direct_relations
             print('\thead:', head, '; tail:', tail, '; rel count:', rel_count)

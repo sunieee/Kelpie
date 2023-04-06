@@ -83,7 +83,7 @@ class PostTrainingEngine(ExplanationEngine):
         score_worsening = metrics[f'{pt}_score'] - metrics[f'{base}_score'] if self.model.is_minimizer() else metrics[f'{base}_score'] - metrics[f'{pt}_score']
         # note: the formulation is very different from the addition one
         # return rd(float(rank_worsening + np.tanh(score_worsening)))
-        return rd(score_worsening * 100)
+        return rd(score_worsening)
 
 
     def removal_relevance(self,

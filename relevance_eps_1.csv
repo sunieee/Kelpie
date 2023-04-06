@@ -1,0 +1,16 @@
+,facts,length,approx,truth,eps
+0,"[['/m/09v3jyg', '/film/film/release_date_s./film/film_regional_release_date/film_release_region', '/m/06mkj']]",1,-0.456297,0.9308141,1.4902128214228196
+1,"[['/m/06mkj', '/location/location/adjoin_s./location/adjoining_relationship/adjoins', '/m/0f8l9c']]",1,-1.4862,0.7400492,3.0082449023656235
+2,"[['/m/09v3jyg', '/film/film/release_date_s./film/film_regional_release_date/film_release_region', '/m/06mkj'], ['/m/06mkj', '/location/location/adjoin_s./location/adjoining_relationship/adjoins', '/m/0f8l9c']]",2,-0.750297,0.7178928,2.0451378997544305
+3,"[['/m/0mwk9', 'INVERSE_/location/location/contains', '/m/05tbn']]",1,4.110801,0.4074006,9.090316309412312
+4,"[['/m/05tbn', '/location/statistical_region/gdp_nominal./measurement_unit/dated_money_value/currency', '/m/09nqf']]",1,3.606001,0.90762097,2.973025231188638
+5,"[['/m/0mwk9', 'INVERSE_/location/location/contains', '/m/05tbn'], ['/m/05tbn', '/location/statistical_region/gdp_nominal./measurement_unit/dated_money_value/currency', '/m/09nqf']]",2,4.301202,0.9603949,3.47857638068628
+6,"[['/m/0mwk9', 'INVERSE_/location/capital_of_administrative_division/capital_of./location/administrative_division_capital_relationship/administrative_division', '/m/0_565']]",1,1.849002,0.9233682,1.0024535920123672
+7,"[['/m/09c7w0', '/location/statistical_region/gdp_real./measurement_unit/adjusted_money_value/adjustment_currency', '/m/09nqf']]",1,7.1908,0.53376067,12.471955591021706
+8,"[['/m/0mwk9', 'INVERSE_/location/capital_of_administrative_division/capital_of./location/administrative_division_capital_relationship/administrative_division', '/m/0_565'], ['/m/0_565', 'INVERSE_/location/location/contains', '/m/09c7w0'], ['/m/09c7w0', '/location/statistical_region/gdp_real./measurement_unit/adjusted_money_value/adjustment_currency', '/m/09nqf']]",3,2.086598,0.8685742,1.402325552669569
+9,"[['/m/0mwk9', '/location/location/contains', '/m/0_565']]",1,0.363201,0.91972506,0.6050982890287021
+10,"[['/m/08mbj5d', 'INVERSE_/common/topic/webpage./common/webpage/category', '/m/09nqf']]",1,1.9526,0.87578803,1.229534917589906
+11,"[['/m/0mwk9', '/location/location/contains', '/m/0_565'], ['/m/0_565', '/common/topic/webpage./common/webpage/category', '/m/08mbj5d'], ['/m/08mbj5d', 'INVERSE_/common/topic/webpage./common/webpage/category', '/m/09nqf']]",3,0.524998,0.8859369,0.407409274189923
+12,"[['/m/0mwk9', 'INVERSE_/location/capital_of_administrative_division/capital_of./location/administrative_division_capital_relationship/administrative_division', '/m/0_565']]",1,0.210297,0.85238516,0.7532840679862803
+13,"[['/m/08mbj5d', 'INVERSE_/common/topic/webpage./common/webpage/category', '/m/09nqf']]",1,3.4922,0.9952739,2.5087829005819584
+14,"[['/m/0mwk9', 'INVERSE_/location/capital_of_administrative_division/capital_of./location/administrative_division_capital_relationship/administrative_division', '/m/0_565'], ['/m/0_565', '/common/topic/webpage./common/webpage/category', '/m/08mbj5d'], ['/m/08mbj5d', 'INVERSE_/common/topic/webpage./common/webpage/category', '/m/09nqf']]",3,0.422299,0.9839045,0.5707926854860352
