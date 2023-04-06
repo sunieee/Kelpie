@@ -82,12 +82,6 @@ parser.add_argument("--entities_to_convert",
                     type=str,
                     help="path of the file with the entities to convert (only used by baselines)")
 
-parser.add_argument("--mode",
-                    type=str,
-                    default="sufficient",
-                    choices=["sufficient", "necessary"],
-                    help="The explanation mode")
-
 parser.add_argument("--relevance_threshold",
                     type=float,
                     default=None,

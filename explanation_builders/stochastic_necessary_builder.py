@@ -26,8 +26,6 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
                  relevance_threshold: float = None,
                  max_explanation_length: int = -1):
         """
-        StochasticSufficientExplanationBuilder object constructor.
-
         :param model: the model to explain
         :param dataset: the dataset used to train the model
         :param hyperparameters: the hyperparameters of the model and of its optimization process
