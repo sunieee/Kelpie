@@ -20,6 +20,7 @@ from link_prediction.models.complex import ComplEx
 from link_prediction.models.conve import ConvE
 from link_prediction.models.gcn import CompGCN
 from link_prediction.models.model import *
+from utils import *
 from link_prediction.optimization.bce_optimizer import BCEOptimizer
 from link_prediction.optimization.multiclass_nll_optimizer import MultiClassNLLOptimizer
 from link_prediction.optimization.pairwise_ranking_optimizer import PairwiseRankingOptimizer
@@ -129,7 +130,6 @@ parser.add_argument('--relation_path', default=False, action='store_true',
 
 args = parser.parse_args()
 print('relation_path', args.relation_path)
-global_dic['args'] = args
 # for t in dic._get_kwargs():
 #     args[t[0]] = t[1]
 # print('args:', args)
@@ -282,8 +282,6 @@ else:
 
 
 output_lines = []
-def triple2str(triple):
-    return '<' +','.join(triple) + '>'
 
 def print_line(line):
     print(line)
@@ -300,7 +298,7 @@ def print_facts(rule_samples_with_relevance):
         cur_rule_samples, cur_relevance = cur_rule_with_relevance
 
         cur_rule_facts = [dataset.sample_to_fact(sample) for sample in cur_rule_samples]
-        cur_rule_facts = ";".join([triple2str(x) for x in cur_rule_facts])
+        cur_rule_facts = ";".join([str(x) for x in cur_rule_facts])
         rule_facts_with_relevance.append(cur_rule_facts + ":" + str(cur_relevance))
         print_line('\t' + rule_facts_with_relevance[-1])
 
@@ -311,8 +309,7 @@ for i, fact in enumerate(testing_facts):
         continue
     if n_samples > 10:  # 只解释前5个 tail != H2O
         break
-    print("Explaining fact " + str(i) + " on " + str(
-        len(testing_facts)) + ": " + triple2str(fact))
+    print(f"Explaining fact {i} on {len(testing_facts)}: {fact}")
     head_id, relation_id, tail_id = dataset.get_id_for_entity_name(head), \
                                     dataset.get_id_for_relation_name(relation), \
                                     dataset.get_id_for_entity_name(tail)
@@ -322,7 +319,7 @@ for i, fact in enumerate(testing_facts):
     rule_samples_with_relevance = kelpie.explain_necessary(sample_to_explain=sample_to_explain,
                                                             perspective="head",
                                                             num_promising_samples=args.prefilter_threshold)
-    print_line(f'output of fact {triple2str(fact)}')
+    print_line(f'output of fact {fact}')
     print_facts(rule_samples_with_relevance)
 
 ech('explaination output:')

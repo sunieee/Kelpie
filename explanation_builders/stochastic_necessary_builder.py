@@ -5,6 +5,7 @@ from typing import Tuple, Any
 from dataset import Dataset
 from relevance_engines.post_training_engine import PostTrainingEngine
 from link_prediction.models.model import *
+from utils import args
 from explanation_builders.explanation_builder import NecessaryExplanationBuilder
 import numpy
 import os

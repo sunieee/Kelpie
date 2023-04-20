@@ -2,7 +2,7 @@ import copy
 from multiprocessing.pool import ThreadPool as Pool
 from typing import Tuple, Any
 from dataset import Dataset
-from link_prediction.models.model import Model, global_dic, plot_dics
+from link_prediction.models.model import *
 from prefilters.prefilter import PreFilter
 
 from collections import defaultdict
@@ -103,7 +103,7 @@ class TopologyPreFilter(PreFilter):
 
         start_entity, end_entity = (head, tail) if perspective == "head" else (tail, head)
 
-        if global_dic['args'].relation_path:
+        if args.relation_path:
             rel_count = self.dataset.num_direct_relations
             print('\thead:', head, '; tail:', tail, '; rel count:', rel_count)
             # relation_path = list(self.dataset.all_simple_paths(head, tail))

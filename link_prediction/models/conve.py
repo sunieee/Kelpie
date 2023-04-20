@@ -242,6 +242,7 @@ class ConvE(Model):
         # if self.kelpie_entity_embedding is not None:
         #     print('last', torch.mm(x, self.kelpie_entity_embedding.transpose(1,0)))
 
+        # print(x.shape, tail_embeddings.shape)
         x = torch.mm(x, tail_embeddings.transpose(1, 0))
         #x += self.b.expand_as(x)
 

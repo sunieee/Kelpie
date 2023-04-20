@@ -15,6 +15,7 @@ from link_prediction.optimization.bce_optimizer import KelpieBCEOptimizer
 from link_prediction.optimization.multiclass_nll_optimizer import KelpieMultiClassNLLOptimizer
 from link_prediction.optimization.pairwise_ranking_optimizer import KelpiePairwiseRankingOptimizer
 from link_prediction.models.model import *
+from utils import args
 from collections import OrderedDict
 import numpy as np
 
@@ -71,7 +72,7 @@ class PostTrainingEngine(ExplanationEngine):
         # get from the cache a Kelpie Dataset focused on the original id of the entity to explain,
         # (or create it from scratch if it is not in cache)
         head_id, _, tail_id = sample_to_explain
-        if global_dic['args'].relation_path:
+        if args.relation_path:
             return self._get_kelpie_dataset_for(entity_ids=[head_id, tail_id])
         
         original_entity_to_convert = head_id if perspective == "head" else tail_id
@@ -206,7 +207,7 @@ class PostTrainingEngine(ExplanationEngine):
         :param original_samples_to_remove:
         :return:
         """
-        if global_dic['args'].relation_path:
+        if args.relation_path:
             print('\tpaths:', original_samples_to_remove)
             tmp = set()
             # 共同路径头/尾

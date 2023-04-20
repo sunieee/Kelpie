@@ -6,6 +6,12 @@ from dataset import Dataset
 import os
 import pandas as pd
 from collections import defaultdict
+import re
+import argparse
+import yaml
+import time
+import random
+
 
 # KEYS FOR SUPPORTED HYPERPARAMETERS (to use in hyperparameter dicts)
 DIMENSION = "dimension"                         # embedding dimension, when both entity and relation embeddings have same dimension
@@ -40,120 +46,6 @@ GAMMA = "gamma"
 RETRAIN_EPOCHS = "retrain_epoches"
 kelpie_dataset_cache_size = 30
 
-# global variable!
-count_dic = defaultdict(list)
-global_dic = {}
-relevance_df = pd.DataFrame(columns=['triple', 'explanation', 'relevance', 'head_relevance', 'tail_relevance'])
-addition_df = pd.DataFrame(columns=['triple', 'origin', 'addition', 'relevance', 'origin_relevance', 'addition_relevance'])
-prelimentary_df = pd.DataFrame(columns=['explanation', 'prelimentary', 'true', 'type_ix'])
-
-
-def rd(x):
-    return round(x, 6)
-
-def path2str(dataset, path):
-    if not global_dic['args'].relation_path:
-        return ",".join(dataset.sample_to_fact(path))
-    s = ''
-    for t in path:
-        f = dataset.sample_to_fact(t)
-        s += f'{f[0]}-{f[1]}->'
-    return s + f[2]
-
-
-def paths2str(dataset, paths):
-    return "|".join([path2str(dataset, x) for x in paths])
-
-
-def strfy(entity_ids):
-    if hasattr(entity_ids, '__iter__'):
-        lis = [str(x) for x in entity_ids]
-        return ','.join(lis)
-    return entity_ids
-
-def get_entity_embeddings(entity_embeddings, kelpie_entity_embedding):
-    if kelpie_entity_embedding is None:
-        return entity_embeddings
-    
-    # print(len(entity_embeddings), len(kelpie_entity_embedding), entity_embeddings.shape)
-
-    return torch.cat([entity_embeddings, kelpie_entity_embedding], 0)
-    # 
-    # print(kelpie_entity_embedding.shape, type(kelpie_entity_embedding))
-    # return torch.cat(entity_embeddings + [kelpie_entity_embedding], 0)
-
-def terminate_at(length, count):
-    '''记录长度为length的解释有多少个'''
-    count_dic[length].append(count)
-    print(f'\tnumber of rules with length {length}: {count}')
-
-
-def get_first(x):
-    if hasattr(x, "__iter__"):
-        return x[0]
-    return x
-
-def prefilter_negative(all_rules, top_k=None):
-        if type(all_rules) == dict:
-            all_rules = all_rules.items()
-        all_rules = sorted(all_rules, key=lambda x: get_first(x[1]), reverse=True)
-        if top_k is None or top_k > len(all_rules):
-            top_k = len(all_rules)
-        for i in range(top_k):
-            if get_first(all_rules[i][1]) < 0:
-                break
-        i += 1
-        print(f'\tpositive top {top_k} rules: {i}/{len(all_rules)}')
-        return all_rules[:i]
-
-
-def reverse_sample(t: Tuple[Any, Any, Any], num_direct_relations: int):
-    if t[1] < num_direct_relations:
-        reverse_rel = t[1] + num_direct_relations
-    else:
-        reverse_rel = t[1] - num_direct_relations
-    return (t[2], reverse_rel, t[0])
-
-
-def get_forward_sample(t: Tuple[Any, Any, Any], num_direct_relations: int):
-    if t[1] < num_direct_relations:
-        return t
-    return (t[2], t[1] - num_direct_relations, t[0])
-
-
-def plot_dic(dic, path='data/statistic.png', size=(15, 6), label=True, rotation=30, limit=10, hspace=0.4):
-    '''
-    limit 代表 此值以下不绘制
-    '''
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(len(dic), figsize=(size[0], size[1] * len(dic)))
-    plt.xticks(rotation=270)
-    fig.subplots_adjust(hspace=hspace, wspace=0.2)
-    
-    for ix, t in enumerate(list(dic.keys())):
-        d = {k: v for k, v in dic[t].items() if v >= limit}
-
-        axis = ax if len(dic) == 1 else ax[ix]
-        axis.title.set_text(f'{t}: {len(d)}/{len(dic[t])} (limit:{limit})')
-        rects = axis.bar([str(x) for x in d.keys()], list(d.values()))
-        
-        if label:
-            for rect in rects:  #rects 是柱子的集合
-                height = rect.get_height()
-                plt.text(rect.get_x() + rect.get_width() / 2, height, str(height), size=10, ha='center', va='bottom')
-
-        for tick in axis.get_xticklabels():
-            tick.set_rotation(rotation)
-    
-    plt.savefig(path)
-
-
-def plot_dics(dics, folder):
-    os.makedirs(folder, exist_ok=True)
-    for k, dic in dics.items():
-        plot_dic({k: dic}, os.path.join(folder, k + '.png'), limit=0, size=(8, 8), hspace=0, rotation=0)
-
-    
 
 class Model(nn.Module):
     """

@@ -1,7 +1,8 @@
 from multiprocessing.pool import ThreadPool as Pool
 from typing import Tuple, Any
 from dataset import Dataset
-from link_prediction.models.model import Model, global_dic
+from link_prediction.models.model import *
+from utils import args
 from prefilters.prefilter import PreFilter
 import numpy as np
 from config import MAX_PROCESSES
