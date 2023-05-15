@@ -11,7 +11,8 @@ explain() {
         run=$4  # 111
         output_folder=output/$dataset/${method}${embedding_model}
         mkdir -p $output_folder
-        explain_path=$output_folder/explain.csv
+        # explain_path=$output_folder/explain.csv
+        explain_path=output/$dataset/explain.csv
         model_path=stored_models/"${method}${embedding_model}_${dataset}.pt"
 
         echo $output_folder
