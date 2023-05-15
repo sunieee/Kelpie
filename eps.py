@@ -96,42 +96,41 @@ else:
 
 
 fact = ('/m/01mvth',  '/people/person/nationality', '/m/09c7w0')
-score_df = pd.DataFrame(columns=['explain', 'facts', 'length', 'origin', 'retrain', 'pt'])  # 'base', 
-
-def get_max_explaination(fact_to_explain):
-    head, relation, tail = fact_to_explain
-    origin_score = get_origin_score(fact_to_explain)
-    print(f"Explaining fact {i} on {len(testing_facts)}: {fact_to_explain}")
-    head_id, relation_id, tail_id = dataset.get_id_for_entity_name(head), \
-                                    dataset.get_id_for_relation_name(relation), \
-                                    dataset.get_id_for_entity_name(tail)
-    sample_to_explain = (head_id, relation_id, tail_id)
-
-    rule_samples_with_relevance = kelpie.explain_necessary(sample_to_explain=sample_to_explain,
-                                                            perspective="head",
-                                                            num_promising_samples=args.prefilter_threshold,
-                                                            l_max = 1)
-    print('rule_samples_with_relevance', rule_samples_with_relevance)
-    paths, score = rule_samples_with_relevance[0]
-
-    p = Path(paths)
-    p.get_retrain_score()
-    relevance = p.relevance
-    new_score_df = pd.DataFrame([[fact_to_explain, p.head, len(p.head), origin_score, p.retrain_head_score, score[0]],
-                                [fact_to_explain, p.tail, len(p.tail), origin_score, p.retrain_tail_score, score[1]],
-                                [fact_to_explain, p.triples, len(p.triples), origin_score, p.retrain_path_score, score[2]]],
-                                        columns=score_df.columns)
-    score_df = pd.concat([score_df, new_score_df])
-    score_df.to_csv('score_df.csv')
-
+exp_df = pd.DataFrame(columns=['to_explain', 'paths', 'length', 'A', 'T', 'B', 'C', 'truth', 'approx'])  # 'base',
+ # 'base', 
+ix = 0
+times = 3
 
 for fact in testing_facts:
-    get_max_explaination(fact)
+    triple = Triple.from_fact(fact)
+    origin_score = triple.origin_score()
+    print(origin_score)
+    if origin_score['AA_rank'] > 1:
+        print('target fact is not remarkable, next...')
+        continue
+    ix += 1
+    if ix > 100:
+        break
+    print('=' * 50)
+    print(f"Explaining fact {ix} on {len(testing_facts)}: {fact}")
+    print('origin score', origin_score)
 
-ech('explaination output:')
-end_time = time.time()
-print("Explain time: " + str(end_time - start_time) + " seconds")
-print('count_dic', count_dic)
-print('count_dic_mean', {k: np.mean(v) for k, v in count_dic.items()})
-relevance_df.to_csv('relevance.csv')
-prelimentary_df.to_csv('prelimentary.csv')
+    explanations = kelpie.explain_necessary(sample_to_explain=triple,
+                                            perspective="head",
+                                            num_promising_samples=args.prefilter_threshold,
+                                            l_max=1)
+    print('=====================explanations=====================')
+    for ix, exp in enumerate(explanations):
+        print(ix, exp)
+
+    for exp in explanations:
+        for i in range(times):
+            exp.calculate_score()
+
+    if ix % 10 == 0:
+        ech('explaination output:')
+        end_time = time.time()
+        print("Explain time: " + str(end_time - start_time) + " seconds")
+        print('count_dic', count_dic)
+        print('count_dic_mean', {k: np.mean(v) for k, v in count_dic.items()})
+

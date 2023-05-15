@@ -61,7 +61,7 @@ class CriageNecessaryExplanationBuilder(NecessaryExplanationBuilder):
                        + str(relevance)
 
             
-            with open(os.path.join(self.args.output_folder, "output_details_1.csv"), "a") as output_file:
+            with open(os.path.join(self.output_folder, "output_details_1.csv"), "a") as output_file:
                 output_file.writelines([cur_line + "\n"])
 
         return sorted(rule_2_relevance.items(), key=lambda x: x[1])[:top_k]

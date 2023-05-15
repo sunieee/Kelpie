@@ -12,10 +12,10 @@ class KelpieDataset(Dataset):
         A KelpieDataset is never *loaded* from file: it is always generated from a pre-existing, already loaded Dataset.
 
         Nomenclature used in the KelpieDataset:
-            - "original entity": the entity to explain the prediction of in the original Dataset;
-            - "clone entity": a homologous mimic, i.e., a "fake" entity
+            A. "original entity": the entity to explain the prediction of in the original Dataset;
+            B. "clone entity": a homologous mimic, i.e., a "fake" entity
                               post-trained with the same training samples as the original entity
-            - "kelpie entity": a non-homologous mimic, i.e., a "fake" entity
+            C. "kelpie entity": a non-homologous mimic, i.e., a "fake" entity
                                post-trained with slightly different training samples from the original entity.
                                (e.g. some training samples may have been removed, or added).
     """
@@ -39,9 +39,9 @@ class KelpieDataset(Dataset):
         else:
             self.entity_ids = [entity_ids]
         
-        print('\tkelpie entity_ids:', self.entity_ids)
-        self.l = len(self.entity_ids)
-        self.num_entities = dataset.num_entities + self.l                # adding the Kelpie entity to the count
+        print('\tkelpie init: entity_ids:', self.entity_ids)
+        self.l = len(self.entity_ids) * 2
+        self.num_entities = dataset.num_entities + self.l                 # adding B & C to the count
         self.num_relations = dataset.num_relations
         self.num_direct_relations = dataset.num_direct_relations
         self.dataset = dataset
@@ -54,23 +54,31 @@ class KelpieDataset(Dataset):
         self.relation_name_2_id = copy.deepcopy(dataset.relation_name_2_id)
         self.relation_id_2_name = copy.deepcopy(dataset.relation_id_2_name)
         self.rid2target = copy.deepcopy(dataset.rid2target)
-        if dataset.tail_restrain:
-            self.tail_restrain = copy.deepcopy(dataset.tail_restrain)
         if dataset.g:
             # https://stackoverflow.com/questions/60310123/why-is-graph-copy-slower-than-copy-deepcopygraph-in-networkx
             self.g = copy.deepcopy(dataset.g)
 
         # add the kelpie entity
-        self.kelpie_ids = []     # 最后l个分别映射到entity_ids
-        self.original_train_samples = []
-        self.original_valid_samples = []
-        self.original_test_samples = []
-        self.entity2kelpie = {}
+        self.clone_ids = []     # homologous mimic * l
+        self.kelpie_ids = []     # non-homologous mimic * l
+        self.entity2kelpie = {}     # A -> C
+        self.entity2clone = {}      # A -> B
+
+        self.kelpie_train_samples = []
+        self.kelpie_valid_samples = []
+        self.kelpie_test_samples = []
 
         for ix, entity_id in enumerate(self.entity_ids):
             entity_name = self.entity_id_2_name[entity_id]
+            clone_name = "clone_" + entity_name
+            clone_id = dataset.num_entities + ix
+            self.entity_name_2_id[clone_name] = clone_id
+            self.entity_id_2_name[clone_id] = clone_name
+            self.clone_ids.append(clone_id)
+            self.entity2clone[entity_id] = clone_id
+
             kelpie_name = "kelpie_" + entity_name
-            kelpie_id = dataset.num_entities + ix
+            kelpie_id = dataset.num_entities + ix + len(self.entity_ids)
             self.entity_name_2_id[kelpie_name] = kelpie_id
             self.entity_id_2_name[kelpie_id] = kelpie_name
             self.kelpie_ids.append(kelpie_id)
@@ -78,25 +86,22 @@ class KelpieDataset(Dataset):
 
             # We do not copy all the triples and samples from the original dataset: the KelpieDataset DOES NOT NEED THEM.
             # The train, valid, and test samples of the KelpieDataset are generated using only those that featured the original entity!
-            self.original_train_samples.append(self._extract_samples_with_entity(dataset.train_samples, entity_id))
-            self.original_valid_samples.append(self._extract_samples_with_entity(dataset.valid_samples, entity_id))
-            self.original_test_samples.append(self._extract_samples_with_entity(dataset.test_samples, entity_id))
+            # That is, triple.tail = entity_id or triple.head = entity_id. There's no reverse relation!
+            original_train_samples = self._extract_samples_with_entity(dataset.train_samples, entity_id)
+            original_valid_samples = self._extract_samples_with_entity(dataset.valid_samples, entity_id)
+            original_test_samples = self._extract_samples_with_entity(dataset.test_samples, entity_id)
 
-        # print('origin samples:', self.original_train_samples)   # 里面没有反向关系！
+            for _id in [clone_id, kelpie_id]:
+                self.kelpie_train_samples.append(Dataset.replace_entity_in_samples(original_train_samples, entity_id, _id))
+                self.kelpie_valid_samples.append(Dataset.replace_entity_in_samples(original_valid_samples, entity_id, _id))
+                self.kelpie_test_samples.append(Dataset.replace_entity_in_samples(original_test_samples, entity_id, _id))
 
-        self.original_train_samples = numpy.concatenate(self.original_train_samples, axis=0)
-        self.original_valid_samples = numpy.concatenate(self.original_valid_samples, axis=0)
-        self.original_test_samples = numpy.concatenate(self.original_test_samples, axis=0)
+        self.kelpie_train_samples = numpy.concatenate(self.kelpie_train_samples, axis=0)
+        self.kelpie_valid_samples = numpy.concatenate(self.kelpie_valid_samples, axis=0)
+        self.kelpie_test_samples = numpy.concatenate(self.kelpie_test_samples, axis=0)
 
-        self.kelpie_train_samples = self.original_train_samples
-        self.kelpie_valid_samples = self.original_valid_samples
-        self.kelpie_test_samples = self.original_test_samples
-        for ix, entity_id in enumerate(self.entity_ids):
-            kelpie_id = dataset.num_entities + ix
-            self.kelpie_train_samples = Dataset.replace_entity_in_samples(self.kelpie_train_samples, entity_id, kelpie_id)
-            self.kelpie_valid_samples = Dataset.replace_entity_in_samples(self.kelpie_valid_samples, entity_id, kelpie_id)
-            self.kelpie_test_samples = Dataset.replace_entity_in_samples(self.kelpie_test_samples, entity_id, kelpie_id)
-
+        print('\tent2clone:', self.entity2clone)
+        print('\tent2kelpie:', self.entity2kelpie)
         print(f'\tkelpie dataset created: train {len(self.kelpie_train_samples)}, valid {len(self.kelpie_valid_samples)}, test {len(self.kelpie_test_samples)}')
         # print(self.kelpie_train_samples)
 
@@ -135,74 +140,8 @@ class KelpieDataset(Dataset):
         self.last_filter_removals = defaultdict(lambda:[])
         self.last_removed_kelpie_samples = []
 
-
     def __len__(self):
         return len(self.kelpie_train_samples)
-
-    # override
-    def add_training_samples(self, samples_to_add: numpy.array):
-        """
-            Add a set of training samples to the training samples of the kelpie entity of this KelpieDataset.
-            The samples to add must still feature the original entity id; this method will convert them before addition.
-            The KelpieDataset will keep track of the last performed addition so it can be undone if necessary
-            calling the undo_last_training_samples_addition method.
-
-            :param samples_to_add: the samples to add, still featuring the id of the original entity,
-                                   in the form of a numpy array
-        """
-
-        for sample in samples_to_add:
-            assert sample[0] in self.entity_ids or sample[2] in self.entity_ids
-
-        self.last_added_samples = samples_to_add
-        self.last_added_samples_number = len(samples_to_add)
-
-        # reset all data structures needed to undo additions. We only want to keep track of the *last* addition.
-        self.last_filter_additions = defaultdict(lambda:[])
-        self.last_added_kelpie_samples = []
-
-        kelpie_samples_to_add = samples_to_add
-        for ix, entity_id in enumerate(self.entity_ids):
-            kelpie_id = self.dataset.num_entities + ix
-            kelpie_samples_to_add = Dataset.replace_entity_in_samples(kelpie_samples_to_add,
-                                                                    old_entity=entity_id,
-                                                                    new_entity=kelpie_id)
-
-        for (cur_head, cur_rel, cur_tail) in kelpie_samples_to_add:
-            self.append_sample(self.to_filter, sample)
-            self.append_sample(self.train_to_filter, sample)
-            self.last_added_kelpie_samples.append(sample)
-            self.append_sample(self.last_filter_additions, sample)
-
-        self.kelpie_train_samples = numpy.vstack((self.kelpie_train_samples, numpy.array(kelpie_samples_to_add)))
-
-
-    def undo_last_training_samples_addition(self):
-        """
-            This method undoes the last addition performed on this KelpieDataset
-            calling its add_training_samples method.
-
-            The purpose of undoing the additions performed on a pre-existing KelpieDataset,
-            instead of creating a new KelpieDataset from scratch, is to improve efficiency.
-        """
-
-        if self.last_added_samples_number <= 0:
-            raise Exception("No addition to undo.")
-
-        # revert the self.kelpie_train_samples to the self.kelpie_train_samples_copy
-        self.kelpie_train_samples = copy.deepcopy(self.kelpie_train_samples_copy)
-
-        # undo additions to to_filter and train_to_filter
-        for key in self.last_filter_additions:
-            for x in self.last_filter_additions[key]:
-                self.to_filter[key].remove(x)
-                self.train_to_filter[key].remove(x)
-
-        # reset the data structures used to undo additions
-        self.last_added_samples = []
-        self.last_added_samples_number = 0
-        self.last_filter_additions = defaultdict(lambda:[])
-        self.last_added_kelpie_samples = []
 
     def assert_samples_in(self, sample, entity_ids=None):
         if entity_ids is None:
@@ -233,11 +172,10 @@ class KelpieDataset(Dataset):
         self.last_removed_kelpie_samples = []
 
         kelpie_train_samples_to_remove = samples_to_remove
-        for ix, entity_id in enumerate(self.entity_ids):
-            kelpie_id = self.dataset.num_entities + ix
+        for entity_id in self.entity_ids:
             kelpie_train_samples_to_remove = Dataset.replace_entity_in_samples(samples=kelpie_train_samples_to_remove,
                                                                            old_entity=entity_id,
-                                                                           new_entity=kelpie_id,
+                                                                           new_entity=self.entity2kelpie[entity_id],
                                                                            as_numpy=False)
 
         # print('removing kelpie smaples:', kelpie_train_samples_to_remove)
@@ -300,27 +238,21 @@ class KelpieDataset(Dataset):
         self.last_filter_removals = defaultdict(lambda:[])
         self.last_removed_kelpie_samples = []
 
+    def as_clone_sample(self, original_sample):
+        self.assert_samples_in(original_sample)
+        for entity_id in self.entity_ids:
+            original_sample = Dataset.replace_entity_in_sample(sample=original_sample,
+                                                old_entity=entity_id,
+                                                new_entity=self.entity2clone[entity_id])
+        return original_sample
 
     def as_kelpie_sample(self, original_sample):
         self.assert_samples_in(original_sample)
-        
-        for ix, entity_id in enumerate(self.entity_ids):
-            kelpie_id = self.dataset.num_entities + ix
+        for entity_id in self.entity_ids:
             original_sample = Dataset.replace_entity_in_sample(sample=original_sample,
                                                 old_entity=entity_id,
-                                                new_entity=kelpie_id)
+                                                new_entity=self.entity2kelpie[entity_id])
         return original_sample
-
-
-    def as_original_sample(self, kelpie_sample):
-        self.assert_samples_in(kelpie_sample, self.kelpie_ids)
-        
-        for ix, entity_id in enumerate(self.entity_ids):
-            kelpie_id = self.dataset.num_entities + ix
-            kelpie_sample = Dataset.replace_entity_in_sample(sample=kelpie_sample,
-                                                old_entity=kelpie_id,
-                                                new_entity=entity_id)
-        return kelpie_sample
 
     ### private utility methods
     @staticmethod

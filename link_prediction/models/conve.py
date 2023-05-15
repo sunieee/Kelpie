@@ -9,6 +9,15 @@ from dataset import Dataset
 from kelpie_dataset import KelpieDataset
 from link_prediction.models.model import *
 
+def rd(x):
+    return round(x, 6)
+
+def get_entity_embeddings(entity_embeddings, kelpie_entity_embedding):
+    if kelpie_entity_embedding is None:
+        return entity_embeddings
+    return torch.cat([entity_embeddings, kelpie_entity_embedding], 0)
+
+
 class ConvE(Model):
     """
         The ConvE class provides a Model implementation in PyTorch for the ConvE system.
@@ -40,10 +49,7 @@ class ConvE(Model):
         # initialize this object both as a Model and as a nn.Module
         Model.__init__(self, dataset)
 
-        self.args = dataset.args
-        self.embedding_model = self.args.embedding_model
         self.kelpie_entity_embedding = None
-        self.tail_restrain = self.args.tail_restrain
         self.name = "ConvE"
         self.dataset = dataset
         self.num_entities = dataset.num_entities                                # number of entities in dataset
@@ -81,7 +87,7 @@ class ConvE(Model):
         # We have verified that this does not affect performances in any way.
         # Each entity embedding and relation embedding is instantiated with size dimension
         # and initialized with Xavier Glorot's normalization
-        if init_random and not self.embedding_model:
+        if init_random and not self.dataset.args.embedding_model:
             self.entity_embeddings = Parameter(torch.rand(self.num_entities, self.dimension).cuda(), requires_grad=True)
             self.relation_embeddings = Parameter(torch.rand(self.num_relations, self.dimension).cuda(), requires_grad=True)
             xavier_normal_(self.entity_embeddings)
@@ -261,7 +267,7 @@ class ConvE(Model):
         # print(len(relations), end=split)
         tail_set = []
         for relation in relations:
-            tail_set += self.tail_restrain[relation]
+            tail_set += self.dataset.args.tail_restrain[relation]
         lis = list(set(tail_set))
         lis.sort()
         return lis
@@ -293,7 +299,7 @@ class ConvE(Model):
         direct_scores, tail_ranks, tail_predictions, _ = self.predict_tails(direct_samples)
 
         # invert samples to perform head predictions
-        if self.args.ignore_inverse:
+        if self.dataset.args.ignore_inverse:
             inverse_scores, head_ranks, head_predictions = direct_scores, tail_ranks, tail_predictions
         else:
             print('evalating inverse relation')
@@ -313,8 +319,8 @@ class ConvE(Model):
         return scores, ranks, predictions
 
     def get_embedding(self):
-        if self.embedding_model:
-            entity_embeddings, relation_embeddings =  self.embedding_model(self.dataset.g)
+        if self.dataset.args.embedding_model:
+            entity_embeddings, relation_embeddings =  self.dataset.args.embedding_model(self.dataset.g)
             return get_entity_embeddings(entity_embeddings, self.kelpie_entity_embedding), relation_embeddings
         return self.entity_embeddings, self.relation_embeddings
     
@@ -336,7 +342,7 @@ class ConvE(Model):
         batch = samples
     
         # hack一下，使用完全预测方法，把非尾实体的置为0
-        if self.tail_restrain:
+        if self.dataset.args.tail_restrain:
             entity_embeddings, _ = self.get_embedding()
             other = list(set(range(entity_embeddings.shape[0])) - set(self.get_tail_set(batch)))
             other += ignore_ids
@@ -359,7 +365,7 @@ class ConvE(Model):
 
                 # set to 0.0 all the predicted values for all the correct tails for that Head-Rel couple
                 all_scores[sample_number, tails_to_filter] = 0.0
-                if self.tail_restrain:
+                if self.dataset.args.tail_restrain:
                     all_scores[sample_number, other] = 0.0
                 # re-set the predicted value for that tail to the original value
                 all_scores[sample_number, tail_id] = target_tail_score
@@ -407,7 +413,7 @@ class KelpieConvE(KelpieModel, ConvE):
         # self.kelpie_entity_id = dataset.kelpie_entity_id
 
         # extract the values of the trained embeddings.
-        if model.embedding_model:
+        if self.dataset.args.embedding_model:
             frozen_entity_embeddings, frozen_relation_embeddings = model.get_embedding()
         else:
             frozen_entity_embeddings = model.entity_embeddings.clone().detach()
@@ -417,12 +423,11 @@ class KelpieConvE(KelpieModel, ConvE):
         # if it is None it is initialized randomly
         self.dataset = dataset
         if init_tensor is None:
-            # init_tensor = torch.rand(self.dataset.l, self.dimension)
+            init_tensor = torch.rand(self.dataset.l, self.dimension)
             # 使用原始嵌入 + 扰动的形式
-            init_tensor = frozen_entity_embeddings[dataset.entity_ids,:].clone().cpu()
+            # init_tensor = frozen_entity_embeddings[dataset.entity_ids,:].clone().cpu()
             # print('mean tensor', torch.mean(init_tensor))
             # init_tensor += torch.rand(self.dataset.l, self.dimension) * torch.mean(init_tensor)
-
 
 
         # It is *extremely* important that kelpie_entity_embedding is both a Parameter and an instance variable
@@ -511,9 +516,12 @@ class KelpieConvE(KelpieModel, ConvE):
             head_predictions, tail_predictions = predictions[i]
             head_rank, tail_rank = ranks[i]
 
-            # remove the forbidden entity id from the head predictions (note: it could be absent due to filtering)
+            # remove the forbidden_entity_ids from the head predictions (note: it could be absent due to filtering)
             # and if it was before the head target decrease the head rank by 1
-            forbidden_indices = np.where(head_predictions == forbidden_entity_id)[0]
+            # forbidden_indices = np.where(head_predictions == forbidden_entity_id)[0]
+            # rewrite the upper line, note that forbidden_entity_ids is plural
+            forbidden_indices = np.where(np.isin(head_predictions, forbidden_entity_ids))[0]
+
             if len(forbidden_indices) > 0:
                 index = forbidden_indices[0]
                 head_predictions = np.concatenate([head_predictions[:index], head_predictions[index + 1:]], axis=0)
@@ -522,7 +530,8 @@ class KelpieConvE(KelpieModel, ConvE):
 
             # remove the kelpie entity id from the tail predictions  (note: it could be absent due to filtering)
             # and if it was before the tail target decrease the head rank by 1
-            forbidden_indices = np.where(tail_predictions == forbidden_entity_id)[0]
+            # forbidden_indices = np.where(tail_predictions == forbidden_entity_id)[0]
+            forbidden_indices = np.where(np.isin(tail_predictions, forbidden_entity_ids))[0]
             if len(forbidden_indices) > 0:
                 index = forbidden_indices[0]
                 tail_predictions = np.concatenate([tail_predictions[:index], tail_predictions[index + 1:]], axis=0)

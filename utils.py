@@ -18,6 +18,8 @@ import argparse
 import yaml
 import time
 import random
+# import List, Dict
+from typing import List, Dict
 
 from link_prediction.models.model import *
 from link_prediction.models.transe import TransE
@@ -29,6 +31,13 @@ from link_prediction.optimization.multiclass_nll_optimizer import MultiClassNLLO
 from link_prediction.optimization.pairwise_ranking_optimizer import PairwiseRankingOptimizer
 from link_prediction.evaluation.evaluation import Evaluator
 from prefilters.prefilter import TOPOLOGY_PREFILTER, TYPE_PREFILTER, NO_PREFILTER
+from link_prediction.optimization.bce_optimizer import KelpieBCEOptimizer
+from link_prediction.optimization.multiclass_nll_optimizer import KelpieMultiClassNLLOptimizer
+from link_prediction.optimization.pairwise_ranking_optimizer import KelpiePairwiseRankingOptimizer
+from collections import OrderedDict
+
+from kelpie_dataset import KelpieDataset
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Model-agnostic tool for explaining link predictions")
@@ -111,7 +120,7 @@ def parse_args():
 
 
 def rd(x):
-    return round(x, 6)
+    return round(x, 4)
 
 def path2str(dataset, path):
     if not args.relation_path:
@@ -167,20 +176,6 @@ def prefilter_negative(all_rules, top_k=None):
         i += 1
         print(f'\tpositive top {top_k} rules: {i}/{len(all_rules)}')
         return all_rules[:i]
-
-
-def reverse_sample(t: Tuple[Any, Any, Any], num_direct_relations: int):
-    if t[1] < num_direct_relations:
-        reverse_rel = t[1] + num_direct_relations
-    else:
-        reverse_rel = t[1] - num_direct_relations
-    return (t[2], reverse_rel, t[0])
-
-
-def get_forward_sample(t: Tuple[Any, Any, Any], num_direct_relations: int):
-    if t[1] < num_direct_relations:
-        return t
-    return (t[2], t[1] - num_direct_relations, t[0])
 
 
 def plot_dic(dic, path='data/statistic.png', size=(15, 6), label=True, rotation=30, limit=10, hspace=0.4):
@@ -322,6 +317,7 @@ else:
 
 model = TargetModel(dataset=dataset, hyperparameters=hyperparameters, init_random=True)
 model.to('cuda')
+print('model is_minimizer:', model.is_minimizer())
 
 
 def get_origin_score(fact):
@@ -329,87 +325,347 @@ def get_origin_score(fact):
     all_scores = model.all_scores(numpy.array([sample_to_explain])).detach().cpu().numpy()[0]
     return all_scores[sample_to_explain[-1]]
 
-class Scores:
-    def __init__(self) -> None:
-        pass
+base_score = {}
 
-# triple 为 3个元素的list
-class Path:
-    def __init__(self, triples, fact_to_explain) -> None:
-        self.triples = triples
-        self.head = triples[0]
-        self.tail = triples[-1]
-        self.fact_to_explain = fact_to_explain
+if isinstance(model, ComplEx):
+    kelpie_optimizer_class = KelpieMultiClassNLLOptimizer
+elif isinstance(model, ConvE):
+    kelpie_optimizer_class = KelpieBCEOptimizer
+elif isinstance(model, TransE):
+    kelpie_optimizer_class = KelpiePairwiseRankingOptimizer
+else:
+    kelpie_optimizer_class = KelpieMultiClassNLLOptimizer
+
+class Triple:
+    def __init__(self, triple) -> None:
+        self.h = triple[0]
+        self.r = triple[1]
+        self.t = triple[2]
+        self.triple = triple
+
+    def reverse(self):
+        if self.r < dataset.num_direct_relations:
+            rr = self.r + dataset.num_direct_relations
+        else:
+            rr = self.r - dataset.num_direct_relations
+        return Triple((self.t, rr, self.h))
+    
+    def __str__(self) -> str:
+        return "<" + ", ".join([x.split('/')[-1] for x in self.to_fact()]) + ">"
+
+    def forward(self):
+        if self.r < dataset.num_direct_relations:
+            return self
+        return Triple((self.t, self.r - dataset.num_direct_relations, self.h))
+    
+    def origin_score(self, remove_triples=[], retrain=False):
+        if len(remove_triples) == 0:
+            if str(self) in base_score and not retrain:
+                return base_score[str(self)]
+
+        self.model = TargetModel(dataset=dataset, hyperparameters=hyperparameters, init_random=True)
+        self.model.to('cuda')
+        ech("Re-Training model...")
+        t = time.time()
+        samples = dataset.train_samples.copy()
+        ids = []
+        for triple in remove_triples:
+            # print('filtering tail', dataset.train_to_filter[(sample[0], sample[1])])
+            ids.append(samples.tolist().index(list(triple.forward().triple)))
+
+        print('delete rows:', ids, [samples[i] for i in ids])
+        np.delete(samples, ids, axis=0)
+        optimizer = Optimizer(model=self.model, hyperparameters=hyperparameters)
+        optimizer.train(train_samples=samples, evaluate_every=10, #10 if args.method == "ConvE" else -1,
+                        save_path=args.model_path,
+                        valid_samples=dataset.valid_samples)
+        print(f"Train time: {time.time() - t}")
+        ret = self.extract_detailed_performances(self.model, 'AA')
+        if len(remove_triples) == 0:
+            base_score[str(self)] = ret
+
+        return ret
+    
+    def extract_detailed_performances(self, model: Model, name: str):
+        # return model.predict_tail(sample)
+        print('evaluating', self.triple)
+        model.eval()
+        # check how the model performs on the sample to explain   , sigmoid=False
+        all_scores = model.all_scores(numpy.array([self.triple])).detach().cpu().numpy()[0]
+
+        # print('original target score:', all_scores[[self.origin.h, self.origin.t]])
+        # print('all score:', all_scores)
+        target_score = all_scores[self.t] # todo: this only works in "head" perspective
+        filter_out = model.dataset.to_filter[(self.h, self.r)] if (self.h, self.r) in model.dataset.to_filter else []
+
+        if model.is_minimizer():
+            all_scores[filter_out] = 1e6
+            all_scores[self.t] = target_score
+            best_score = numpy.min(all_scores)
+            target_rank = numpy.sum(all_scores <= target_score)  # we use min policy here
+
+        else:
+            all_scores[filter_out] = -1e6
+            all_scores[self.t] = target_score
+            best_score = numpy.max(all_scores)
+            target_rank = numpy.sum(all_scores >= target_score)  # we use min policy here
+
+        ret = {
+            f'{name}_score': rd(target_score), 
+            f'{name}_rank': target_rank, 
+            f'{name}_best_score': rd(best_score)
+        }
+        print('ret:', ret)
+        return rd(target_score)
 
     @staticmethod
-    def from_str(s):
+    def from_fact(fact):
+        sample = dataset.fact_to_sample(fact)
+        return Triple(sample)
+    
+    def to_fact(self):
+        return dataset.sample_to_fact(self.triple)
+
+    def replace_head(self, triple):
+        return Triple((triple.h, self.r, self.t))
+    
+    def replace_tail(self, triple):
+        return Triple((self.h, self.r, triple.t))
+
+# triple/sample 为长度为3的 tuple
+class Path:
+    def __init__(self, triples: List[Triple], fact_to_explain: Triple) -> None:
+        assert len(triples)
+        self.triples = triples
+        self.fact_to_explain = fact_to_explain
+
+    def reverse(self):
+        return Path([triple.reverse() for triple in self.triples[::-1]], self.fact_to_explain.reverse())
+    
+    @property
+    def head(self):
+        return self.triples[0]
+    
+    @property
+    def tail(self):
+        return self.triples[-1]
+    
+    @property
+    def rel_path(self):
+        return tuple([triple.r for triple in self.triples])
+
+    @staticmethod
+    def from_str(s: str):
         # the explanation consists of a single path
         nodes = re.split('->|-', s)
         triples = [nodes[i:i+3] for i in range(0, len(nodes), 2)][:-1]
         return Path(triples)
     
-    def __str__(self) -> str:
-        return ''.join([triple[0] + '-' + triple[1] + '->' for triple in self.triples] + [self.tail[-1]])
-
-    def get_retrain_score(self):
-        self.retrain_head_score = Explanation([self.head], self.fact_to_explain)
-        self.retrain_tail_score = Explanation([self.tail], self.fact_to_explain)
-        self.retrain_path_score = Explanation(self.triples, self.fact_to_explain)
-
-
-class Paths:
-    def __init__(self, paths, fact_to_explain) -> None:
-        self.paths = paths
-        self.fact_to_explain = fact_to_explain
-        self.head = [path.head for path in self.paths]
-        self.tail = [path.tail for path in self.paths]
-        self.triples = []
-        for path in self.paths:
-            self.triples.extend(path.triples)
-
-    @staticmethod
-    def from_str(s):
-        return Paths([Path(path_str) for path_str in s.split('|')])
+    def __len__(self):
+        return len(self.triples)
     
     def __str__(self) -> str:
-        return '|'.join([str(path) for path in self.paths])
+        return ''.join([str(triple.h) + '-' + str(triple.r) + '->' for triple in self.triples] + [str(self.tail.t)])
+
+    def has_entity(self, ent):
+        return ent in [t.h for t in self.triples] # + [t.t for t in self.triples]
+
+    def extend(self, triple: Triple):  #  -> Path
+        return Path(self.triples + [triple], self.fact_to_explain)
     
-    def get_retrain_score(self):
-        self.retrain_head_score = Explanation(self.head, self.fact_to_explain)
-        self.retrain_tail_score = Explanation(self.tail, self.fact_to_explain)
-        self.retrain_path_score = Explanation(self.triples, self.fact_to_explain)
-
-
+    # overload operator +
+    def __add__(self, path):
+        return Path(self.triples + path.triples, self.fact_to_explain)
+    
+    @property
+    def inverse_rel(self):
+        for i in range(len(self.triples) - 1):
+            if abs(self.triples[i].r - self.triples[i+1].r) == dataset.num_direct_relations:
+                return min(self.triples[i].r, self.triples[i+1].r)
+        return -1
+    
 class Explanation:
-    def __init__(self, triples, fact_to_explain) -> None:
-        self.triples = triples
-        self.fact_to_explain = fact_to_explain
 
-    def __str__(self) -> str:
-        return str(self.triples)
+    # The kelpie_cache is a simple LRU cache that allows reuse of KelpieDatasets and of base post-training results
+    # without need to re-build them from scratch every time.
+    _kelpie_dataset_cache_size = kelpie_dataset_cache_size
+    _kelpie_dataset_cache = OrderedDict()
 
-    def get_retrain_score(self):
-        model = TargetModel(dataset=dataset, hyperparameters=hyperparameters, init_random=True)
-        model.to('cuda')
-        ech("Re-Training model...")
+    _original_model_results = {}  # map original samples to scores and ranks from the original model
+    _base_pt_model_results = {}   # map original samples to scores and ranks from the base post-trained model
+    _base_cache_embeddings = {} # map embeddings of base node to its embedding 
+    
+    df = pd.DataFrame(columns=['to_explain', 'paths', 'length', 'AA', 'AB', 'BA', 'BB', 'CA', 'AC', 'CC', 'head', 'tail', 'path'])
+    print_count = 0
+
+    def __init__(self, paths: List[Path], sample_to_explain: Triple) -> None:
+        print(f'init explanation: sample: {str(sample_to_explain)}, removing: {str([str(p) for p in paths])}')
+        self.paths = paths
+        self.sample_to_explain = sample_to_explain
+        self.head = [path.head for path in paths]
+        self.tail = [path.tail for path in paths]
+        
+        self.original_samples_to_remove = set()
+        # 共同路径头/尾
+        for p in paths:    # remove samples connected to head/tail
+            self.original_samples_to_remove.add(p.head.forward().triple)
+            self.original_samples_to_remove.add(p.tail.forward().triple)
+        print('\tremoving samples:', self.original_samples_to_remove)
+            
+        self.kelpie_dataset = self._get_kelpie_dataset_for(entity_ids=[sample_to_explain.h, sample_to_explain.t])
+
+    def _get_kelpie_dataset_for(self, entity_ids) -> KelpieDataset:
+        """
+        Return the value of the queried key in O(1).
+        Additionally, move the key to the end to show that it was recently used.
+
+        :param original_entity_id:
+        :return:
+        """
+        name = strfy(entity_ids)
+        if name not in self._kelpie_dataset_cache:
+
+            kelpie_dataset = KelpieDataset(dataset=self.dataset, entity_ids=entity_ids)
+            self._kelpie_dataset_cache[name] = kelpie_dataset
+            self._kelpie_dataset_cache.move_to_end(name)
+
+            if len(self._kelpie_dataset_cache) > self._kelpie_dataset_cache_size:
+                self._kelpie_dataset_cache.popitem(last=False)
+
+        return self._kelpie_dataset_cache[name]
+    
+    def post_train(self,
+                   kelpie_model_to_post_train: KelpieModel,
+                   kelpie_train_samples: numpy.array):
+        """
+
+        :param kelpie_model_to_post_train: an UNTRAINED kelpie model that has just been initialized
+        :param kelpie_train_samples:
+        :return:
+        """
+        # kelpie_model_class = self.model.kelpie_model_class()
+        # kelpie_model = kelpie_model_class(model=self.model, dataset=kelpie_dataset)
+        kelpie_model_to_post_train.to('cuda')
+
+        optimizer = self.kelpie_optimizer_class(model=kelpie_model_to_post_train,
+                                                hyperparameters=hyperparameters,
+                                                verbose=False)
+        optimizer.epochs = hyperparameters[RETRAIN_EPOCHS]
         t = time.time()
-        samples = dataset.train_samples.copy()
-        ids = []
-        for triple in self.triples:
-            sample = dataset.fact_to_sample(triple)
-            sample = dataset.original_sample(sample)
-            # print('filtering tail', dataset.train_to_filter[(sample[0], sample[1])])
-            ids.append(samples.tolist().index(list(sample)))
+        optimizer.train(train_samples=kelpie_train_samples)
+        if self.print_count < 5:
+            self.print_count += 1
+            print(f'\t\t[post_train_time: {rd(time.time() - t)}]')
+        return kelpie_model_to_post_train
 
-        print('delete rows:', ids)
-        np.delete(samples, ids, axis=0)
-        optimizer = Optimizer(model=model, hyperparameters=hyperparameters)
-        optimizer.train(train_samples=samples, evaluate_every=10, #10 if args.method == "ConvE" else -1,
-                        save_path=args.model_path,
-                        valid_samples=dataset.valid_samples)
-        print(f"Train time: {time.time() - t}")
 
-        sample_to_explain = dataset.fact_to_sample(self.fact_to_explain)
-        model.eval()
-        all_scores = model.all_scores(numpy.array([sample_to_explain])).detach().cpu().numpy()[0]
-        return all_scores[sample_to_explain[-1]]
+    def calculate_score(self):
+        start_time = time.time()
+
+        AA = self.sample_to_explain.origin_score(retrain=True)
+        self.model = self.sample_to_explain.model
+
+        kelpie_model_class = self.model.kelpie_model_class()
+        kelpie_model = kelpie_model_class(model=self.model, dataset=self.kelpie_dataset)
+
+        BB_triple = Triple(self.kelpie_dataset.as_clone_sample(original_sample=self.sample_to_explain.triple))
+        CC_triple = Triple(self.kelpie_dataset.as_kelpie_sample(original_sample=self.sample_to_explain.triple))
+        self.kelpie_dataset.remove_training_samples(self.original_samples_to_remove)
+
+        kelpie_model = self.post_train(kelpie_model_to_post_train=kelpie_model,
+                        kelpie_train_samples=self.kelpie_dataset.kelpie_train_samples)  # type: KelpieModel
+        # kelpie_model.summary('after post_train')
+
+        BB = BB_triple.extract_detailed_performances(kelpie_model, 'BB')
+        AB = BB_triple.replace_head(self.sample_to_explain).extract_detailed_performances(kelpie_model, 'AB')
+        BA = BB_triple.replace_tail(self.sample_to_explain).extract_detailed_performances(kelpie_model, 'BA')
+        CC = CC_triple.extract_detailed_performances(kelpie_model, 'CC')
+        AC = CC_triple.replace_head(self.sample_to_explain).extract_detailed_performances(kelpie_model, 'AC')
+        CA = CC_triple.replace_tail(self.sample_to_explain).extract_detailed_performances(kelpie_model, 'CA')
+
+        self.head = Relevance(self.head, self.sample_to_explain, AA, BA, CA)
+        self.tail = Relevance(self.tail, self.sample_to_explain, AA, AB, AC)
+        self.path = Relevance(self.head + self.tail, self.sample_to_explain, AA, BB, CC)
+
+        print('calculate time:', rd(time.time() - start_time))    
+        kelpie_model.undo_last_training_samples_removal()
+        self.df.loc[len(self.df)] = {
+            'to_explain': self.sample_to_explain,
+            'paths': [str(p) for p in self.paths],
+            'length': len(self.paths),
+            'AA': AA,
+            'AB': AB,
+            'BA': BA,
+            'BB': BB,
+            'CA': CA,
+            'AC': AC,
+            'CC': CC,
+            'head': self.head.approx,
+            'tail': self.tail.approx,
+            'path': self.path.approx
+        }
+        self.df.to_csv(f'{args.output_folder}/explanation.csv', index=False)
+
+
+    def has_negative(self):
+        return self.head.approx < 0 or self.tail.approx < 0 or self.path.approx < 0
+
+    @property
+    def max_relevance(self):
+        return max(self.head.approx, self.tail.approx, self.path.approx)
+    
+    @property
+    def min_relevance(self):
+        return min(self.head.approx, self.tail.approx, self.path.approx)
+    
+    @property
+    def relevance(self):
+        return self.path.approx
+    
+    def __str__(self):
+        return f'''{self.fact_to_explain}: {[str(p) for p in self.paths]}
+head: {str(self.head)}
+tail: {str(self.tail)}
+path: {str(self.path)}
+        '''
+
+class Relevance:
+    get_truth = False
+    df = pd.DataFrame(columns=['to_explain', 'triples', 'length', 'A', 'T', 'B', 'C', 'truth', 'approx']) 
+
+    def __init__(self, triples: List[Triple], sample_to_explain: Triple, A, B, C) -> None:
+        self.triples = triples
+        self.sample_to_explain = sample_to_explain
+        self.A = A
+        self.B = B
+        self.C = C
+
+        self.df.loc[len(self.df)] = {
+            'to_explain': str(sample_to_explain),
+            'triples': [str(t) for t in triples],
+            'length': len(triples),
+            'A': A,
+            'T': self.T if self.get_truth else None,
+            'B': B,
+            'C': C,
+            'truth': self.truth if self.get_truth else None,
+            'approx': self.approx}
+        self.df.to_csv(f'{args.output_folder}/relevance.csv', index=False)
+
+    @property
+    def T(self):
+        if '_T' in self.__dict__:
+            return self._T
+        self._T = self.sample_to_explain.origin_score(self.triples)
+        return self._T
+    
+    @property
+    def truth(self):
+        return self.A - self.T
+    
+    @property
+    def approx(self):
+        return self.B - self.C
+
+    def __str__(self):
+        return f'{[str(t) for t in self.head]}: {self.approx}'

@@ -6,7 +6,7 @@ from prefilters.type_based_prefilter import TypeBasedPreFilter
 from prefilters.topology_prefilter import TopologyPreFilter
 from relevance_engines.post_training_engine import PostTrainingEngine
 from link_prediction.models.model import *
-from utils import args
+from utils import *
 from explanation_builders.stochastic_necessary_builder import StochasticNecessaryExplanationBuilder
 import numpy as np
 
@@ -56,7 +56,7 @@ class Kelpie:
                                          hyperparameters=hyperparameters)
 
     def explain_necessary(self,
-                          sample_to_explain: Tuple[Any, Any, Any],
+                          sample_to_explain: Triple,
                           perspective: str,
                           num_promising_samples: int = 0,
                           l_max: int = 4):
@@ -93,16 +93,7 @@ class Kelpie:
                                                                     relevance_threshold=self.relevance_threshold,
                                                                     max_explanation_length=self.max_explanation_length)
         
-        explanations_with_relevance = explanation_builder.build_explanations(samples_to_remove=most_promising_samples,
-                                                                            l_max=l_max)
-        
-        for rule, relevance in explanations_with_relevance:
-            relevance_df.loc[len(relevance_df)] = {
-                'triple': sample_to_explain,
-                'explanation': rule,
-                'relevance': relevance[0],
-                'head_relevance': relevance[1],
-                'tail_relevance': relevance[2],
-            }
+        explanations = explanation_builder.build_explanations(samples_to_remove=most_promising_samples,
+                                                                l_max=l_max)
 
-        return explanations_with_relevance
+        return explanations

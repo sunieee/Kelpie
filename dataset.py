@@ -483,8 +483,5 @@ class Dataset:
 
         return numpy.array(result) if as_numpy else result
 
-    def printable_sample(self, sample: Tuple[int, int, int]):
-        return "<" + ", ".join(self.sample_to_fact(sample)) + ">"
-
     def printable_nple(self, nple: list):
         return" + ".join([self.printable_sample(sample) for sample in nple])

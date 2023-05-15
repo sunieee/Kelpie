@@ -2,7 +2,7 @@ from typing import Tuple, Any
 from dataset import Dataset
 from relevance_engines.data_poisoning_engine import DataPoisoningEngine
 from link_prediction.models.model import *
-from utils import args
+from utils import args, prefilter_negative
 from explanation_builders.explanation_builder import NecessaryExplanationBuilder
 import os
 
@@ -58,7 +58,7 @@ class DataPoisoningNecessaryExplanationBuilder(NecessaryExplanationBuilder):
                         str(perturbed_removed_sample_score) + ";" + \
                         str(relevance)
 
-            with open(os.path.join(self.args.output_folder, "output_details_1.csv"), "a") as output_file:
+            with open(os.path.join(args.output_folder, "output_details_1.csv"), "a") as output_file:
                 output_file.writelines([cur_line + "\n"])
 
         # all_rules = sorted(rule_2_relevance.items(), key=lambda x: x[1], reverse=True)[:top_k]

@@ -9,12 +9,11 @@ class Evaluator:
     def __init__(self, model: Model):
         self.model = model
         self.dataset = model.dataset    # the Dataset may be useful to convert ids to names
-        self.args = self.dataset.args
 
     def evaluate(self,
                 samples: np.array,
                 write_output:bool = False, folder='.'):
-        if not self.args.specify_relation:
+        if not self.dataset.args.specify_relation:
             return self._evaluate(samples, write_output, folder, print_prefix='\t')
 
         # 对relation进行排序

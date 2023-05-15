@@ -4,6 +4,7 @@ from typing import Tuple, Any
 from dataset import Dataset
 from link_prediction.models.model import *
 from prefilters.prefilter import PreFilter
+from utils import *
 
 from collections import defaultdict
 from config import MAX_PROCESSES
@@ -35,53 +36,38 @@ class TopologyPreFilter(PreFilter):
             self.entity_id_2_train_samples[h].append((h, r, t))
             self.entity_id_2_train_samples[t].append((h, r, t))
 
-    def get_entity_set(self, entity, length):
+    def get_paths(self, entity, length, fact_to_explain: tuple) -> Dict[Any, List[Path]]:
         '''
-        获取 entity 长度为 length 的邻居target
-        返回entity到target路径的列表
+        获取 entity 长度为 length 的路径列表
         '''
         if hasattr(entity, '__iter__') and type(entity) != str:
-            raise Exception('list of entities not allowed!')    
-        paths = defaultdict(list)
-        paths[entity] = [[]]    # 1 empty path
+            raise Exception('list of entities not allowed!')
         
-        for i in range(length):
-            new_paths = defaultdict(list)
-            for ent in paths:
-                for s in self.get_head_samples(ent):
-                    for p in paths[ent]:
-                        if s[2] not in set([x[0] for x in p]):  # avoid complicated path
-                            new_paths[s[2]].append(p + [s])
-            paths = new_paths
-        return paths
-    
-    def get_head_samples(self, ent):
-        head_samples = []
-        samples = self.entity_id_2_train_samples[ent]
-        for s in samples:
-            if s[0] == ent:
-                head_samples.append(s)
-            else:
-                head_samples.append(self.reverse_sample(s))
-        return head_samples
+        lis = []
+        for s in self.entity_id_2_train_samples[entity]:
+            sample = Triple(s) if s[0] == entity else Triple(s).reverse()
+            lis.append(Path([sample], fact_to_explain))
+            
+        for i in range(1, length):
+            new_lis = []
+            for p in lis:
+                for s in self.entity_id_2_train_samples[p.tail.t]:
+                    sample = Triple(s) if s[0] == p.tail.t else Triple(s).reverse()
+                    if not p.has_entity(sample.t):
+                        new_lis.append(p.extend(sample))
+            lis = new_lis
 
-    def reverse_sample(self, t):
-        if t[1] < self.dataset.num_direct_relations:
-            reverse_rel = t[1] + self.dataset.num_direct_relations
-        else:
-            reverse_rel = t[1] - self.dataset.num_direct_relations
-        return (t[2], reverse_rel, t[0])
-    
-    def reverse(self, lis):
-        lis.reverse()
-        return [self.reverse_sample(t) for t in lis]
-    
+        # print('lis', [str(p) for p in lis])
+        dic = defaultdict(list)
+        for p in lis:
+            dic[p.tail.t].append(p)
+        return dic
 
     def top_promising_samples_for(self,
-                                  sample_to_explain:Tuple[Any, Any, Any],
+                                  sample_to_explain:Triple,
                                   perspective:str,
                                   top_k: int,
-                                  verbose=True):
+                                  verbose=True) -> List[Path]:
 
         """
         This method extracts the top k promising samples for interpreting the sample to explain,
@@ -96,11 +82,10 @@ class TopologyPreFilter(PreFilter):
         """
         self.counter = 0
 
-        head, relation, tail = sample_to_explain
-
         if verbose:
-            print("Extracting promising facts for" + self.dataset.printable_sample(sample_to_explain))
+            print("Extracting promising facts for" + str(sample_to_explain))
 
+        head, tail = sample_to_explain.h, sample_to_explain.t
         start_entity, end_entity = (head, tail) if perspective == "head" else (tail, head)
 
         if args.relation_path:
@@ -108,38 +93,40 @@ class TopologyPreFilter(PreFilter):
             print('\thead:', head, '; tail:', tail, '; rel count:', rel_count)
             # relation_path = list(self.dataset.all_simple_paths(head, tail))
             relation_path = []
-            for length in range(1, 4):
+            for length in range(2, 4):
                 cnt = len(relation_path)
                 half = length // 2
-                head_map = self.get_entity_set(head, half)
-                tail_map = self.get_entity_set(tail, length - half)
+                head_map = self.get_paths(head, half, sample_to_explain)
+                tail_map = self.get_paths(tail, length - half, sample_to_explain)
                 keys = head_map.keys() & tail_map.keys()
 
                 for key in keys:
                     # print(key, head_map[key], tail_map[key])
                     for p1 in head_map[key]:
                         for p2 in tail_map[key]:
-                            relation_path.append(p1 + self.reverse(p2))
+                            relation_path.append(p1 + p2.reverse())
                 print(f'\tpath of length {length}: {len(relation_path) - cnt}')
+
+            # l1 = self.get_paths(head, 1, sample_to_explain)[tail]
+            # l2 = self.get_paths(head, 2, sample_to_explain)[tail]
+            # l3 = self.get_paths(head, 3, sample_to_explain)[tail]
+
+            # print('length 1:', len(l1))
+            # print('length 2:', len(l2))
+            # print('length 3:', len(l3))
 
             node_count = defaultdict(int)
             rel_path_count = defaultdict(int)
             inverse_count = defaultdict(int)
-
-            def get_inverse(path):
-                for i in range(len(path)-1):
-                    if abs(path[i][1] - path[i+1][1]) == rel_count:
-                        return min(path[i][1], path[i+1][1])
-                return -1
             
             def sort_dic(x):
                 return dict(sorted(x.items(), key=lambda item: item[1], reverse=True))
             
             for path in relation_path:
-                node_count[path[0][2]] += 1
-                node_count[path[-1][0]] += 1
-                rel_path_count[tuple([x[1] for x in path])] += 1
-                inverse_count[get_inverse(path)] += 1
+                node_count[path.head.t] += 1
+                node_count[path.tail.h] += 1
+                rel_path_count[path.rel_path] += 1
+                inverse_count[path.inverse_rel] += 1
             
             rel_path_count = sort_dic(rel_path_count)
             node_count = sort_dic(node_count)
@@ -149,13 +136,13 @@ class TopologyPreFilter(PreFilter):
                 'node_count': node_count,
                 'inverse_count': inverse_count
             }, 'results/plot')
-            print('rel path', rel_path_count)
-            print('node', node_count)
+            # print('rel path', rel_path_count)
+            # print('node', node_count)
             print('inverse', inverse_count)
 
             # pre-filter top relevance 
             # relation_path.sort(key=lambda path: has_inverse_path(path), reverse=True)
-            relation_path.sort(key=lambda path: rel_path_count[tuple([x[1] for x in path])] * (node_count[path[0][2]] + node_count[path[-1][0]]))
+            relation_path.sort(key=lambda path: rel_path_count[path.rel_path] * (node_count[path.head.t] + node_count[path.tail.h]))
             relation_path.sort(key=lambda path: len(path))           
             
             # print('relation path:', relation_path)

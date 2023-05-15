@@ -42,9 +42,6 @@ class BCEOptimizer(Optimizer):
 
         Optimizer.__init__(self, model=model, hyperparameters=hyperparameters, verbose=verbose)
 
-        self.args = model.args
-        self.train_restrain = self.args.train_restrain
-        self.tail_restrain = self.args.tail_restrain
         self.batch_size = hyperparameters[BATCH_SIZE]
         self.label_smoothing = hyperparameters[LABEL_SMOOTHING]
         self.learning_rate = hyperparameters[LEARNING_RATE]
@@ -109,7 +106,7 @@ class BCEOptimizer(Optimizer):
               er_vocab_pairs,
               batch_size: int):
 
-        if self.tail_restrain is None:
+        if self.model.dataset.args.tail_restrain is None:
             np.random.shuffle(er_vocab_pairs)
         self.model.train()
 
@@ -151,9 +148,9 @@ class BCEOptimizer(Optimizer):
 
     def step(self, batch, targets):
         self.optimizer.zero_grad()
-        if self.train_restrain:
+        if self.model.dataset.args.train_restrain:
             predictions = self.model.forward(batch, restrain=True)
-            if self.tail_restrain:
+            if self.model.dataset.args.tail_restrain:
                 targets = targets[:, self.model.get_tail_set(batch, '-')]
         else:
             predictions = self.model.forward(batch)
