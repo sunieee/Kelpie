@@ -481,7 +481,14 @@ class Dataset:
                 t = new_entity
             result.append((h, r, t))
 
-        return numpy.array(result) if as_numpy else result
+        if not as_numpy:
+            return result
+        result = numpy.array(result)
+        if result.ndim == 1:
+            result = result[numpy.newaxis, :]
+
+        assert result.ndim == 2
+        return result
 
     def printable_nple(self, nple: list):
         return" + ".join([self.printable_sample(sample) for sample in nple])

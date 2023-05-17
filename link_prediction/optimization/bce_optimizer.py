@@ -48,6 +48,7 @@ class BCEOptimizer(Optimizer):
         self.decay = hyperparameters[DECAY]
         self.epochs = hyperparameters[EPOCHS]
 
+        self.optimizer_step = False
         self.loss = torch.nn.BCELoss()
         self.optimizer = optim.Adam(params=self.model.parameters(), lr=self.learning_rate)  # we only support ADAM for BCE
         self.scheduler = optim.lr_scheduler.ExponentialLR(self.optimizer, self.decay)
@@ -124,7 +125,7 @@ class BCEOptimizer(Optimizer):
                 bar.update(batch_size)
                 bar.set_postfix(loss=str(round(l.item(), 6)))
 
-            if self.decay:
+            if self.decay and self.optimizer_step:
                 self.scheduler.step()
 
 
@@ -162,6 +163,7 @@ class BCEOptimizer(Optimizer):
             os.abort()
         loss.backward()
         self.optimizer.step()
+        self.optimizer_step = True
         return loss
 
 

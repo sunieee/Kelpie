@@ -1,5 +1,4 @@
 
-
 device=0
 # method=ConvE          TransE
 # embedding_model=CompGCN       ""
@@ -11,6 +10,7 @@ explain() {
         run=$4  # 111
         output_folder=output/$dataset/${method}${embedding_model}
         mkdir -p $output_folder
+        mkdir -p stored_models
         # explain_path=$output_folder/explain.csv
         explain_path=output/$dataset/explain.csv
         model_path=stored_models/"${method}${embedding_model}_${dataset}.pt"
@@ -20,7 +20,7 @@ explain() {
         CUDA_VISIBLE_DEVICES=$device python eps.py --dataset $dataset --method=$method \
                 --model_path $model_path --explain_path $explain_path \
                 --output_folder $output_folder  --run $run --embedding_model "$embedding_model" \
-                --relation_path --prefilter_threshold 5 > "$output_folder/out.log"
+                --relation_path --prefilter_threshold 5 2>&1 > "$output_folder/out.log"
                 # --specify_relation --ignore_inverse --train_restrain  \
                 # --prefilter_threshold 50
                 # --relation_path

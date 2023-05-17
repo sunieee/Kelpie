@@ -4,7 +4,6 @@ from prefilters.no_prefilter import NoPreFilter
 from prefilters.prefilter import TYPE_PREFILTER, TOPOLOGY_PREFILTER, NO_PREFILTER
 from prefilters.type_based_prefilter import TypeBasedPreFilter
 from prefilters.topology_prefilter import TopologyPreFilter
-from relevance_engines.post_training_engine import PostTrainingEngine
 from link_prediction.models.model import *
 from utils import *
 from explanation_builders.stochastic_necessary_builder import StochasticNecessaryExplanationBuilder
@@ -50,10 +49,6 @@ class Kelpie:
             self.prefilter = NoPreFilter(model=model, dataset=dataset)
         else:
             self.prefilter = TopologyPreFilter(model=model, dataset=dataset)
-
-        self.engine = PostTrainingEngine(model=model,
-                                         dataset=dataset,
-                                         hyperparameters=hyperparameters)
 
     def explain_necessary(self,
                           sample_to_explain: Triple,

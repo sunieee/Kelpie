@@ -135,7 +135,7 @@ class TopologyPreFilter(PreFilter):
                 'rel_path_count': rel_path_count,
                 'node_count': node_count,
                 'inverse_count': inverse_count
-            }, 'results/plot')
+            })
             # print('rel path', rel_path_count)
             # print('node', node_count)
             print('inverse', inverse_count)

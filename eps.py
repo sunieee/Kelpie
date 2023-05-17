@@ -96,23 +96,24 @@ else:
 
 
 fact = ('/m/01mvth',  '/people/person/nationality', '/m/09c7w0')
-exp_df = pd.DataFrame(columns=['to_explain', 'paths', 'length', 'A', 'T', 'B', 'C', 'truth', 'approx'])  # 'base',
  # 'base', 
 ix = 0
 times = 3
 
+exp_df = pd.DataFrame(columns=['to_explain', 'paths', 'length', 'AA', 'AB', 'BA', 'BB', 'CA', 'AC', 'CC', 'head', 'tail', 'path'])
+rel_df = pd.DataFrame(columns=['to_explain', 'triples', 'length', 'A', 'T', 'B', 'C', 'truth', 'approx']) 
+
 for fact in testing_facts:
     triple = Triple.from_fact(fact)
     origin_score = triple.origin_score()
-    print(origin_score)
-    if origin_score['AA_rank'] > 1:
+    if base_rank[str(triple)] > 1:
         print('target fact is not remarkable, next...')
         continue
     ix += 1
     if ix > 100:
         break
     print('=' * 50)
-    print(f"Explaining fact {ix} on {len(testing_facts)}: {fact}")
+    print(f"Explaining fact {ix} on {len(testing_facts)}: {str(triple)}")
     print('origin score', origin_score)
 
     explanations = kelpie.explain_necessary(sample_to_explain=triple,
@@ -124,8 +125,18 @@ for fact in testing_facts:
         print(ix, exp)
 
     for exp in explanations:
+        exp_df.loc[len(exp_df)] = exp.metric
+        rel_df.loc[len(rel_df)] = exp.head.metric
+        rel_df.loc[len(rel_df)] = exp.tail.metric
+        rel_df.loc[len(rel_df)] = exp.path.metric
+        
         for i in range(times):
             exp.calculate_score()
+            
+            exp_df.loc[len(exp_df)] = exp.metric
+            rel_df.loc[len(rel_df)] = exp.head.metric
+            rel_df.loc[len(rel_df)] = exp.tail.metric
+            rel_df.loc[len(rel_df)] = exp.path.metric
 
     if ix % 10 == 0:
         ech('explaination output:')

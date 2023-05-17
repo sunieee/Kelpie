@@ -91,10 +91,16 @@ class KelpieDataset(Dataset):
             original_valid_samples = self._extract_samples_with_entity(dataset.valid_samples, entity_id)
             original_test_samples = self._extract_samples_with_entity(dataset.test_samples, entity_id)
 
+            def valid(samples: numpy.array):
+                return samples.shape[0] and samples.shape[1]
+
             for _id in [clone_id, kelpie_id]:
-                self.kelpie_train_samples.append(Dataset.replace_entity_in_samples(original_train_samples, entity_id, _id))
-                self.kelpie_valid_samples.append(Dataset.replace_entity_in_samples(original_valid_samples, entity_id, _id))
-                self.kelpie_test_samples.append(Dataset.replace_entity_in_samples(original_test_samples, entity_id, _id))
+                if valid(original_train_samples):
+                    self.kelpie_train_samples.append(Dataset.replace_entity_in_samples(original_train_samples, entity_id, _id))
+                if valid(original_valid_samples):
+                    self.kelpie_valid_samples.append(Dataset.replace_entity_in_samples(original_valid_samples, entity_id, _id))
+                if valid(original_test_samples):
+                    self.kelpie_test_samples.append(Dataset.replace_entity_in_samples(original_test_samples, entity_id, _id))
 
         self.kelpie_train_samples = numpy.concatenate(self.kelpie_train_samples, axis=0)
         self.kelpie_valid_samples = numpy.concatenate(self.kelpie_valid_samples, axis=0)
@@ -257,4 +263,11 @@ class KelpieDataset(Dataset):
     ### private utility methods
     @staticmethod
     def _extract_samples_with_entity(samples, entity_id):
-        return samples[numpy.where(numpy.logical_or(samples[:, 0] == entity_id, samples[:, 2] == entity_id))]
+        result = samples[numpy.where(numpy.logical_or(samples[:, 0] == entity_id, samples[:, 2] == entity_id))]
+
+        # Check if the result is 1D, and if so, convert to 2D
+        if result.ndim == 1:
+            result = result[numpy.newaxis, :]
+
+        assert result.ndim == 2
+        return result

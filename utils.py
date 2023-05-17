@@ -205,7 +205,8 @@ def plot_dic(dic, path='data/statistic.png', size=(15, 6), label=True, rotation=
     plt.savefig(path)
 
 
-def plot_dics(dics, folder):
+def plot_dics(dics):
+    folder = args.output_folder
     os.makedirs(folder, exist_ok=True)
     for k, dic in dics.items():
         plot_dic({k: dic}, os.path.join(folder, k + '.png'), limit=0, size=(8, 8), hspace=0, rotation=0)
@@ -326,6 +327,7 @@ def get_origin_score(fact):
     return all_scores[sample_to_explain[-1]]
 
 base_score = {}
+base_rank = {}
 
 if isinstance(model, ComplEx):
     kelpie_optimizer_class = KelpieMultiClassNLLOptimizer
@@ -341,7 +343,7 @@ class Triple:
         self.h = triple[0]
         self.r = triple[1]
         self.t = triple[2]
-        self.triple = triple
+        self.triple = tuple(triple)
 
     def reverse(self):
         if self.r < dataset.num_direct_relations:
@@ -380,15 +382,16 @@ class Triple:
                         save_path=args.model_path,
                         valid_samples=dataset.valid_samples)
         print(f"Train time: {time.time() - t}")
-        ret = self.extract_detailed_performances(self.model, 'AA')
+        score = self.extract_detailed_performances(self.model, 'AA')
         if len(remove_triples) == 0:
-            base_score[str(self)] = ret
+            base_score[str(self)] = score
+            base_rank[str(self)] = self.ret['rank']
 
-        return ret
+        return score
     
     def extract_detailed_performances(self, model: Model, name: str):
         # return model.predict_tail(sample)
-        print('evaluating', self.triple)
+        print(f'evaluating {name}:', self.triple, end='\t')
         model.eval()
         # check how the model performs on the sample to explain   , sigmoid=False
         all_scores = model.all_scores(numpy.array([self.triple])).detach().cpu().numpy()[0]
@@ -410,12 +413,12 @@ class Triple:
             best_score = numpy.max(all_scores)
             target_rank = numpy.sum(all_scores >= target_score)  # we use min policy here
 
-        ret = {
-            f'{name}_score': rd(target_score), 
-            f'{name}_rank': target_rank, 
-            f'{name}_best_score': rd(best_score)
+        self.ret = {
+            'score': rd(target_score), 
+            'rank': target_rank, 
+            'best_score': rd(best_score)
         }
-        print('ret:', ret)
+        print(self.ret)
         return rd(target_score)
 
     @staticmethod
@@ -499,21 +502,18 @@ class Explanation:
     print_count = 0
 
     def __init__(self, paths: List[Path], sample_to_explain: Triple) -> None:
-        print(f'init explanation: sample: {str(sample_to_explain)}, removing: {str([str(p) for p in paths])}')
+        print(f'init explanation: sample: {str(sample_to_explain)}, removing: {[str(p) for p in paths]}')
         self.paths = paths
         self.sample_to_explain = sample_to_explain
-        self.head = [path.head for path in paths]
-        self.tail = [path.tail for path in paths]
-        
         self.original_samples_to_remove = set()
         # 共同路径头/尾
         for p in paths:    # remove samples connected to head/tail
             self.original_samples_to_remove.add(p.head.forward().triple)
             self.original_samples_to_remove.add(p.tail.forward().triple)
         print('\tremoving samples:', self.original_samples_to_remove)
+        for sample in self.original_samples_to_remove:
+            print('\t\t', Triple(sample))
             
-        self.kelpie_dataset = self._get_kelpie_dataset_for(entity_ids=[sample_to_explain.h, sample_to_explain.t])
-
     def _get_kelpie_dataset_for(self, entity_ids) -> KelpieDataset:
         """
         Return the value of the queried key in O(1).
@@ -525,7 +525,7 @@ class Explanation:
         name = strfy(entity_ids)
         if name not in self._kelpie_dataset_cache:
 
-            kelpie_dataset = KelpieDataset(dataset=self.dataset, entity_ids=entity_ids)
+            kelpie_dataset = KelpieDataset(dataset=dataset, entity_ids=entity_ids)
             self._kelpie_dataset_cache[name] = kelpie_dataset
             self._kelpie_dataset_cache.move_to_end(name)
 
@@ -547,7 +547,7 @@ class Explanation:
         # kelpie_model = kelpie_model_class(model=self.model, dataset=kelpie_dataset)
         kelpie_model_to_post_train.to('cuda')
 
-        optimizer = self.kelpie_optimizer_class(model=kelpie_model_to_post_train,
+        optimizer = kelpie_optimizer_class(model=kelpie_model_to_post_train,
                                                 hyperparameters=hyperparameters,
                                                 verbose=False)
         optimizer.epochs = hyperparameters[RETRAIN_EPOCHS]
@@ -561,19 +561,25 @@ class Explanation:
 
     def calculate_score(self):
         start_time = time.time()
-
         AA = self.sample_to_explain.origin_score(retrain=True)
         self.model = self.sample_to_explain.model
 
-        kelpie_model_class = self.model.kelpie_model_class()
-        kelpie_model = kelpie_model_class(model=self.model, dataset=self.kelpie_dataset)
+        AA = self.sample_to_explain.extract_detailed_performances(self.model, 'AA-model')
 
-        BB_triple = Triple(self.kelpie_dataset.as_clone_sample(original_sample=self.sample_to_explain.triple))
-        CC_triple = Triple(self.kelpie_dataset.as_kelpie_sample(original_sample=self.sample_to_explain.triple))
-        self.kelpie_dataset.remove_training_samples(self.original_samples_to_remove)
+        kelpie_dataset = self._get_kelpie_dataset_for(entity_ids=[self.sample_to_explain.h, self.sample_to_explain.t])
+        kelpie_dataset.remove_training_samples(self.original_samples_to_remove)
+        print('start calculate explanation, init current dataset: ')
+        print('length', len(kelpie_dataset))
+        print('train samples front + end:', kelpie_dataset.kelpie_train_samples[:10], kelpie_dataset.kelpie_train_samples[-10:])
+
+        kelpie_model_class = self.model.kelpie_model_class()
+        kelpie_model = kelpie_model_class(model=self.model, dataset=kelpie_dataset)
+
+        BB_triple = Triple(kelpie_dataset.as_clone_sample(original_sample=self.sample_to_explain.triple))
+        CC_triple = Triple(kelpie_dataset.as_kelpie_sample(original_sample=self.sample_to_explain.triple))
 
         kelpie_model = self.post_train(kelpie_model_to_post_train=kelpie_model,
-                        kelpie_train_samples=self.kelpie_dataset.kelpie_train_samples)  # type: KelpieModel
+                        kelpie_train_samples=kelpie_dataset.kelpie_train_samples)  # type: KelpieModel
         # kelpie_model.summary('after post_train')
 
         BB = BB_triple.extract_detailed_performances(kelpie_model, 'BB')
@@ -583,13 +589,16 @@ class Explanation:
         AC = CC_triple.replace_head(self.sample_to_explain).extract_detailed_performances(kelpie_model, 'AC')
         CA = CC_triple.replace_tail(self.sample_to_explain).extract_detailed_performances(kelpie_model, 'CA')
 
-        self.head = Relevance(self.head, self.sample_to_explain, AA, BA, CA)
-        self.tail = Relevance(self.tail, self.sample_to_explain, AA, AB, AC)
-        self.path = Relevance(self.head + self.tail, self.sample_to_explain, AA, BB, CC)
+        AA = self.sample_to_explain.extract_detailed_performances(kelpie_model, 'AA-kelpie')
+
+        self.head = Relevance([path.head for path in self.paths], self.sample_to_explain, AA, BA, CA)
+        self.tail = Relevance([path.tail for path in self.paths], self.sample_to_explain, AA, AB, AC)
+        self.path = Relevance([path.head for path in self.paths] + [path.tail for path in self.paths], 
+                              self.sample_to_explain, AA, BB, CC)
 
         print('calculate time:', rd(time.time() - start_time))    
-        kelpie_model.undo_last_training_samples_removal()
-        self.df.loc[len(self.df)] = {
+        kelpie_dataset.undo_last_training_samples_removal()    # 可能没必要，不需要重复利用
+        self.metric = {
             'to_explain': self.sample_to_explain,
             'paths': [str(p) for p in self.paths],
             'length': len(self.paths),
@@ -604,7 +613,8 @@ class Explanation:
             'tail': self.tail.approx,
             'path': self.path.approx
         }
-        self.df.to_csv(f'{args.output_folder}/explanation.csv', index=False)
+        self.df.loc[len(self.df)] = self.metric
+        self.df.to_csv(f'{args.output_folder}/all_explanation.csv', index=False)
 
 
     def has_negative(self):
@@ -639,8 +649,8 @@ class Relevance:
         self.A = A
         self.B = B
         self.C = C
-
-        self.df.loc[len(self.df)] = {
+        
+        self.metric = {
             'to_explain': str(sample_to_explain),
             'triples': [str(t) for t in triples],
             'length': len(triples),
@@ -649,8 +659,10 @@ class Relevance:
             'B': B,
             'C': C,
             'truth': self.truth if self.get_truth else None,
-            'approx': self.approx}
-        self.df.to_csv(f'{args.output_folder}/relevance.csv', index=False)
+            'approx': self.approx
+        }
+        self.df.loc[len(self.df)] = self.metric
+        self.df.to_csv(f'{args.output_folder}/all_relevance.csv', index=False)
 
     @property
     def T(self):
@@ -668,4 +680,4 @@ class Relevance:
         return self.B - self.C
 
     def __str__(self):
-        return f'{[str(t) for t in self.head]}: {self.approx}'
+        return f'{[str(t) for t in self.triples]}: {self.approx}'

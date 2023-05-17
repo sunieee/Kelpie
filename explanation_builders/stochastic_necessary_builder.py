@@ -3,7 +3,6 @@ import random
 from typing import Tuple, Any
 
 from dataset import Dataset
-from relevance_engines.post_training_engine import PostTrainingEngine
 from link_prediction.models.model import *
 from utils import *
 from explanation_builders.explanation_builder import NecessaryExplanationBuilder
@@ -42,9 +41,6 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
         self.args = dataset.args
         self.xsi = relevance_threshold if relevance_threshold is not None else DEAFAULT_XSI_THRESHOLD
         self.window_size = 10
-        self.engine = PostTrainingEngine(model=model,
-                                         dataset=dataset,
-                                         hyperparameters=hyperparameters)
 
     def build_explanations(self,
                            samples_to_remove: List[Path],
@@ -128,7 +124,7 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
         # this is an exception: all samples (= rules with length 1) are tested
         for i, sample_to_remove in enumerate(samples_to_remove):
             # scores = self._compute_relevance_for_rule(([sample_to_remove]))
-            exp = Explanation(sample_to_remove, self.sample_to_explain)
+            exp = Explanation([sample_to_remove], self.sample_to_explain)
             exp.calculate_score()
             if exp.relevance > 0:
                 explanations.append(exp)

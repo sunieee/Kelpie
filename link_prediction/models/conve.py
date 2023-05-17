@@ -425,7 +425,8 @@ class KelpieConvE(KelpieModel, ConvE):
         if init_tensor is None:
             init_tensor = torch.rand(self.dataset.l, self.dimension)
             # 使用原始嵌入 + 扰动的形式
-            # init_tensor = frozen_entity_embeddings[dataset.entity_ids,:].clone().cpu()
+            # init_tensor = torch.cat((frozen_entity_embeddings[dataset.entity_ids,:].clone().cpu(), 
+            #                          frozen_entity_embeddings[dataset.entity_ids,:].clone().cpu()), dim=0)
             # print('mean tensor', torch.mean(init_tensor))
             # init_tensor += torch.rand(self.dataset.l, self.dimension) * torch.mean(init_tensor)
 
