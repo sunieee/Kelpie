@@ -377,9 +377,12 @@ class Dataset:
             self.train_to_filter[(head, rel)].append(tail)
             self.train_to_filter[(tail, rel + self.num_direct_relations)].append(head)
 
-    def sample_to_fact(self, sample_to_convert: Tuple):
+    def sample_to_fact(self, sample_to_convert: Tuple, simplified: bool = False):
         head_id, rel_id, tail_id = sample_to_convert
-        return self.entity_id_2_name[head_id], self.relation_id_2_name[rel_id], self.entity_id_2_name[tail_id]
+        head_name, rel_name, tail_name = self.entity_id_2_name[head_id], self.relation_id_2_name[rel_id], self.entity_id_2_name[tail_id]
+        if simplified:
+            return head_name.split('/')[-1], rel_name.split('/')[-1], tail_name.split('/')[-1]
+        return head_name, rel_name, tail_name
 
     def fact_to_sample(self, fact_to_convert: Tuple):
         head_name, rel_name, tail_name = fact_to_convert

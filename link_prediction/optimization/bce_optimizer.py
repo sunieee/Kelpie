@@ -126,7 +126,7 @@ class BCEOptimizer(Optimizer):
                 bar.update(batch_size)
                 bar.set_postfix(loss=str(round(l.item(), 6)))
 
-            if self.decay:
+            if self.decay and self.scheduler.optimizer._step_count:
                 self.scheduler.step()
 
 
@@ -204,11 +204,13 @@ class KelpieBCEOptimizer(BCEOptimizer):
                 bar.update(batch_size)
                 bar.set_postfix(loss=str(round(l.item(), 6)))
 
-            if self.decay:
+            if self.decay and self.scheduler.optimizer._step_count:
                 self.scheduler.step()
 
 
     def step_on_batch(self, batch, targets):
+        # batch = batch.cuda()
+        # targets = targets.cuda()
 
         # just making sure that these layers are still in eval() mode
         if isinstance(self.model, ConvE):
@@ -221,9 +223,9 @@ class KelpieBCEOptimizer(BCEOptimizer):
         self.optimizer.zero_grad()
         predictions = self.model.forward(batch)
 
-        # print('[step]batch:', batch.shape)
-        # print('[step]predictions:', predictions.shape)
-        # print('[step]targets:', targets.shape)
+        print('[step]batch:', batch.shape)
+        print('[step]predictions:', predictions.shape)
+        print('[step]targets:', targets.shape)
 
         loss = self.loss(predictions, targets)
         loss.backward()

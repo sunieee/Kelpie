@@ -28,12 +28,6 @@ class ExplanationEngine:
                                     top_k: int):
         pass
 
-    def simple_addition_explanations(self,
-                    sample_to_explain: Tuple[Any, Any, Any],
-                    perspective: str,
-                    samples_to_add: list):
-        pass
-
     def _extract_sample_nples(self, samples: list, n: int):
         return list(itertools.combinations(samples, n))
 

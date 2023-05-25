@@ -4,7 +4,6 @@ from prefilters.no_prefilter import NoPreFilter
 from prefilters.prefilter import TYPE_PREFILTER, TOPOLOGY_PREFILTER, NO_PREFILTER
 from prefilters.type_based_prefilter import TypeBasedPreFilter
 from prefilters.topology_prefilter import TopologyPreFilter
-from relevance_engines.post_training_engine import PostTrainingEngine
 from link_prediction.models.model import Model
 from explanation_builders.stochastic_necessary_builder import StochasticNecessaryExplanationBuilder
 import numpy as np
@@ -50,14 +49,14 @@ class Kelpie:
         else:
             self.prefilter = TopologyPreFilter(model=model, dataset=dataset)
 
-        self.engine = PostTrainingEngine(model=model,
-                                         dataset=dataset,
-                                         hyperparameters=hyperparameters)
+        # self.engine = PostTrainingEngine(model=model,
+        #                                  dataset=dataset,
+        #                                  hyperparameters=hyperparameters)
 
     def explain_necessary(self,
                           sample_to_explain: Tuple[Any, Any, Any],
                           perspective: str,
-                          num_promising_samples: int = 50):
+                          num_promising_samples: int = 20):
         """
         This method extracts necessary explanations for a specific sample,
         from the perspective of either its head or its tail.
@@ -89,8 +88,7 @@ class Kelpie:
                                                                     sample_to_explain=sample_to_explain,
                                                                     perspective=perspective,
                                                                     relevance_threshold=self.relevance_threshold,
-                                                                    max_explanation_length=self.max_explanation_length,
-                                                                    engine=self.engine)
+                                                                    max_explanation_length=self.max_explanation_length)
         
         explanations_with_relevance = explanation_builder.build_explanations(samples_to_remove=most_promising_samples)
         return explanations_with_relevance

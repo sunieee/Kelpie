@@ -16,6 +16,8 @@ from link_prediction.optimization.multiclass_nll_optimizer import KelpieMultiCla
 from link_prediction.optimization.pairwise_ranking_optimizer import KelpiePairwiseRankingOptimizer
 from link_prediction.models.model import *
 from collections import OrderedDict
+from utils import post_train_times
+import numpy as np
 
 class PostTrainingEngine(ExplanationEngine):
 
@@ -31,7 +33,6 @@ class PostTrainingEngine(ExplanationEngine):
             relevance = float(rank_delta)
         elif self.dataset.args.relevance_method == 'score':
             relevance = float(score_delta * 10)
-        print(relevance)
         return round(relevance, 4)
     
 
@@ -74,85 +75,6 @@ class PostTrainingEngine(ExplanationEngine):
         self._kelpie_dataset_cache_size = 20
         self._kelpie_dataset_cache = OrderedDict()
         self.print_count = 0
-
-    def addition_relevance(self,
-                           sample_to_convert: Tuple[Any, Any, Any],
-                           perspective: str,
-                           samples_to_add: list):
-        """
-            Given a "sample to convert" (that is, a sample that the model currently does not predict as true,
-            and that we want to be predicted as true);
-            given the perspective from which to analyze it;
-            and given and a list of samples containing the entity to convert and that were not seen in training;
-            compute the relevance of the samples to add, that is, an estimate of the effect they would have
-            if added (all together) to the perspective entity to improve the prediction of the sample to convert.
-
-            :param sample_to_convert: the sample that we would like the model to predict as "true",
-                                      in the form of a tuple (head, relation, tail)
-            :param perspective: the perspective from which to explain the fact: it can be either "head" or "tail"
-            :param samples_to_add: the list of samples containing the perspective entity
-                                   that we want to analyze the effect of, if added to the perspective entity
-
-            :return:
-        """
-        start_time = time.time()
-
-        head_id, relation_id, tail_id = sample_to_convert
-        original_entity_to_convert = head_id if perspective == "head" else tail_id
-
-        # check how the original model performs on the original sample to convert
-        original_target_entity_score, \
-        original_best_entity_score, \
-        original_target_entity_rank = self.original_results_for(original_sample_to_predict=sample_to_convert)
-
-        # get from the cache a Kelpie Dataset focused on the original id of the entity to explain,
-        # (or create it from scratch if it is not in cache)
-        kelpie_dataset = self._get_kelpie_dataset_for(original_entity_id=original_entity_to_convert)
-
-        kelpie_model_class = self.model.kelpie_model_class()
-
-        kelpie_init_tensor_size = self.model.dimension if not isinstance(self.model, TuckER) else self.model.entity_dimension
-        kelpie_init_tensor = torch.rand(1, kelpie_init_tensor_size)
-
-        # run base post-training to obtain a "clone" of the perspective entity and see how it performs in the sample to convert
-        base_kelpie_model = kelpie_model_class(model=self.model,
-                                               dataset=kelpie_dataset,
-                                               init_tensor=kelpie_init_tensor)
-        base_pt_target_entity_score, \
-        base_pt_best_entity_score, \
-        base_pt_target_entity_rank = self.base_post_training_results_for(kelpie_model=base_kelpie_model,
-                                                                         kelpie_dataset=kelpie_dataset,
-                                                                         original_sample_to_predict=sample_to_convert)
-
-        # run actual post-training by adding the passed samples to the perspective entity and see how it performs in the sample to convert
-        pt_kelpie_model = kelpie_model_class(model=self.model,
-                                             dataset=kelpie_dataset,
-                                             init_tensor=kelpie_init_tensor)
-        pt_target_entity_score, \
-        pt_best_entity_score, \
-        pt_target_entity_rank = self.addition_post_training_results_for(kelpie_model=pt_kelpie_model,
-                                                                        kelpie_dataset=kelpie_dataset,
-                                                                        original_sample_to_predict=sample_to_convert,
-                                                                        original_samples_to_add=samples_to_add)
-
-        # we want to give higher priority to the facts that, when added, make the score the better (= smaller).
-        rank_improvement = base_pt_target_entity_rank - pt_target_entity_rank
-
-        # if the model is a minimizer the smaller pt_target_entity_score is than base_pt_target_entity_score, the more relevant the added fact;
-        # if the model is a maximizer, the greater pt_target_entity_score is than base_pt_target_entity_score, the more relevant the added fact
-        score_improvement = base_pt_target_entity_score - pt_target_entity_score if self.model.is_minimizer() else pt_target_entity_score - base_pt_target_entity_score
-
-        relevance = float(rank_improvement + self.sigmoid(score_improvement)) / float(base_pt_target_entity_rank)
-        relevance = round(relevance, 4)
-        print(relevance)
-
-        end_time = time.time()
-        execution_time = end_time - start_time
-        return relevance, \
-               original_best_entity_score, original_target_entity_score, original_target_entity_rank, \
-               base_pt_best_entity_score, base_pt_target_entity_score, base_pt_target_entity_rank,\
-               pt_best_entity_score, pt_target_entity_score, pt_target_entity_rank, \
-               execution_time
 
     def removal_relevance(self,
                            sample_to_explain: Tuple[Any, Any, Any],
@@ -304,49 +226,6 @@ class PostTrainingEngine(ExplanationEngine):
 
         return self._base_pt_model_results[original_sample_to_predict]
 
-
-    def addition_post_training_results_for(self,
-                                           kelpie_model: KelpieModel,
-                                           kelpie_dataset: KelpieDataset,
-                                           original_sample_to_predict: numpy.array,
-                                           original_samples_to_add: numpy.array):
-
-        """
-
-        :param kelpie_model: an UNTRAINED kelpie model that has just been initialized
-        :param kelpie_dataset:
-        :param original_sample_to_predict:
-        :param original_samples_to_add:
-        :return:
-        """
-        original_sample_to_predict = (original_sample_to_predict[0], original_sample_to_predict[1], original_sample_to_predict[2])
-        kelpie_sample_to_predict = kelpie_dataset.as_kelpie_sample(original_sample=original_sample_to_predict)
-
-        # these are original samples, and not "kelpie" samples.
-        # the "add_training_samples" method replaces the original entity with the kelpie entity by itself
-        kelpie_dataset.add_training_samples(original_samples_to_add)
-
-        original_entity_name = kelpie_dataset.entity_id_2_name[kelpie_dataset.original_entity_id]
-        print(f"\t\t\tAdding samples: ", end='')
-        for x in original_samples_to_add:
-            print (kelpie_dataset.printable_sample(x), end=',')
-
-        # post-train the kelpie model on the dataset that has undergone the addition
-        cur_kelpie_model = self.post_train(kelpie_model_to_post_train=kelpie_model,
-                                           kelpie_train_samples=kelpie_dataset.kelpie_train_samples)  # type: KelpieModel
-
-        # then check how the post-trained model performs on the kelpie sample to explain.
-        # This means checking how the "kelpie entity" (with the added sample) performs, rather than the original entity
-        pt_target_entity_score, \
-        pt_best_entity_score, \
-        pt_target_entity_rank = self.extract_detailed_performances_on_sample(cur_kelpie_model, kelpie_sample_to_predict)
-
-        # undo the addition, to allow the following iterations of this loop
-        kelpie_dataset.undo_last_training_samples_addition()
-
-        return pt_target_entity_score, pt_best_entity_score, pt_target_entity_rank
-
-
     def removal_post_training_results_for(self,
                                           kelpie_model: KelpieModel,
                                           kelpie_dataset: KelpieDataset,
@@ -413,8 +292,7 @@ class PostTrainingEngine(ExplanationEngine):
         # print(optimizer.epochs)
         t = time.time()
         optimizer.train(train_samples=kelpie_train_samples)
-        print('len(kelpie_train_samples)', len(kelpie_train_samples))
-        print(f'\t\t[post_train_time: {round(time.time() - t, 4)}]')
+        print(f'[post_train] kelpie_train_samples: {len(kelpie_train_samples)}, time: {round(time.time() - t, 4)}')
         return kelpie_model_to_post_train
 
 

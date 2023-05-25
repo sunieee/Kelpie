@@ -8,6 +8,7 @@ from torch.nn.init import xavier_normal_
 from dataset import Dataset
 from kelpie_dataset import KelpieDataset
 from link_prediction.models.model import *
+from link_prediction.models.model import Dataset
 
 class ConvE(Model):
     """
@@ -198,6 +199,7 @@ class ConvE(Model):
                      and a column for each possible tail
         """
         entity_embeddings, relation_embeddings = self.get_embedding()
+        entity_embeddings, relation_embeddings = self.entity_embeddings, self.relation_embeddings
 
         # list of entity embeddings for the heads of the facts
         head_embeddings = entity_embeddings[samples[:, 0]]
@@ -358,6 +360,57 @@ class ConvE(Model):
 
     def kelpie_model_class(self):
         return KelpieConvE
+
+
+class PostConvE(KelpieModel, ConvE):
+    def __init__(self, model: ConvE, head: int, init_tensor=None):
+        ConvE.__init__(self, model.dataset, model.hyperparameters, False)
+
+        self.head = head
+        self.model = model
+        if init_tensor is None:
+            init_tensor = torch.rand(1, self.dimension)
+
+        # for param in self.parameters():
+        #     param.requires_grad = False
+
+        frozen_entity_embeddings = model.entity_embeddings.clone().detach()
+        frozen_relation_embeddings = model.relation_embeddings.clone().detach()
+
+        self.trainable_head_embedding = torch.nn.Parameter(init_tensor, requires_grad=True)
+        frozen_entity_embeddings[self.head] = self.trainable_head_embedding
+        self.entity_embeddings = frozen_entity_embeddings.to('cuda')
+        self.relation_embeddings = frozen_relation_embeddings.to('cuda')
+
+        self.convolutional_layer = copy.deepcopy(model.convolutional_layer)
+        self.convolutional_layer.requires_grad = False
+        self.convolutional_layer.eval()
+
+        self.hidden_layer = copy.deepcopy(model.hidden_layer)
+        self.hidden_layer.requires_grad = False
+        self.hidden_layer.eval()
+
+        # copy the batchnorms of the original ConvE model and keep them frozen
+        self.batch_norm_1 = copy.deepcopy(model.batch_norm_1)  # copy weights and stuff
+        self.batch_norm_1.weight.requires_grad = False
+        self.batch_norm_1.bias.requires_grad = False
+        self.batch_norm_1.eval()
+
+        self.batch_norm_2 = copy.deepcopy(model.batch_norm_2)  # copy weights and stuff
+        self.batch_norm_2.weight.requires_grad = False
+        self.batch_norm_2.bias.requires_grad = False
+        self.batch_norm_2.eval()
+
+        self.batch_norm_3 = copy.deepcopy(model.batch_norm_3)  # copy weights and stuff
+        self.batch_norm_3.weight.requires_grad = False
+        self.batch_norm_3.bias.requires_grad = False
+        self.batch_norm_3.eval()
+
+    def update_embeddings(self):
+        with torch.no_grad():
+            # self.entity_embeddings[self.kelpie_entity_id] = self.kelpie_entity_embedding
+            self.entity_embeddings[self.head] = self.trainable_head_embedding
+
 
 class KelpieConvE(KelpieModel, ConvE):
     def __init__(

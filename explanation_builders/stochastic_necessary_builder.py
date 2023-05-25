@@ -3,13 +3,13 @@ import random
 from typing import Tuple, Any
 
 from dataset import Dataset
-from relevance_engines.post_training_engine import PostTrainingEngine
 from link_prediction.models.model import *
 from explanation_builders.explanation_builder import NecessaryExplanationBuilder
 import numpy
 import os
 from collections import defaultdict
 import numpy as np
+from utils import KelpieExplanation
 
 DEAFAULT_XSI_THRESHOLD = 5
 
@@ -25,7 +25,7 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
                  sample_to_explain: Tuple[Any, Any, Any],
                  perspective: str,
                  relevance_threshold: float = None,
-                 max_explanation_length: int = -1, engine=None):
+                 max_explanation_length: int = -1):
         """
         StochasticNecessaryExplanationBuilder object constructor.
 
@@ -47,7 +47,6 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
         # self.engine = PostTrainingEngine(model=model,
         #                                  dataset=dataset,
         #                                  hyperparameters=hyperparameters)
-        self.engine = engine
 
 
     def prefilter_negative(self, all_rules, top_k):
@@ -121,7 +120,8 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
 
         # this is an exception: all samples (= rules with length 1) are tested
         for i, sample_to_remove in enumerate(samples_to_remove):
-            relevance = self._compute_relevance_for_rule(([sample_to_remove]))
+            relevance = KelpieExplanation(self.sample_to_explain, [sample_to_remove]).relevance
+            # self._compute_relevance_for_rule(([sample_to_remove]))
             if relevance < 1:
                 continue
             sample_2_relevance[sample_to_remove] = relevance
@@ -153,7 +153,8 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
 
             current_rule, current_preliminary_score = all_possible_rules_with_preliminary_scores[i]
 
-            current_rule_relevance = self._compute_relevance_for_rule(current_rule)
+            current_rule_relevance = KelpieExplanation(self.sample_to_explain, current_rule).relevance
+            # self._compute_relevance_for_rule(current_rule)
             if current_rule_relevance < 1:
                 continue
             rule_2_relevance[current_rule] = current_rule_relevance
@@ -217,6 +218,7 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
             rel_lis.append(relevance)
         
         if np.mean(rel_lis) > 1:
+            return np.mean(rel_lis)
             print('The relevance is valid!', nple_to_remove)
             for _ in range(40):
                 relevance = self._compute_relevance_for_rule_single(nple_to_remove)
