@@ -433,7 +433,6 @@ class PostTrainingEngine(ExplanationEngine):
             all_scores[filter_out] = 1e6
             # if the target score had been filtered out, put it back
             # (this may happen in necessary mode, where we may run this method on the actual test sample;
-            # not in sufficient mode, where we run this method on the unseen "samples to convert")
             all_scores[tail_id] = target_entity_score
             best_entity_score = numpy.min(all_scores)
             target_entity_rank = numpy.sum(all_scores <= target_entity_score)  # we use min policy here
@@ -442,7 +441,6 @@ class PostTrainingEngine(ExplanationEngine):
             all_scores[filter_out] = -1e6
             # if the target score had been filtered out, put it back
             # (this may happen in necessary mode, where we may run this method on the actual test sample;
-            # not in sufficient mode, where we run this method on the unseen "samples to convert")
             all_scores[tail_id] = target_entity_score
             best_entity_score = numpy.max(all_scores)
             target_entity_rank = numpy.sum(all_scores >= target_entity_score)  # we use min policy here
