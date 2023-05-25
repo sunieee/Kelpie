@@ -23,6 +23,18 @@ class PostTrainingEngine(ExplanationEngine):
     def sigmoid(x):
         return 1 / (1 + math.exp(-x))
 
+
+    def get_removel_relevance(self, rank_delta, score_delta):
+        if self.dataset.args.relevance_method == 'kelpie':
+            relevance = float(rank_delta + self.sigmoid(score_delta))
+        elif self.dataset.args.relevance_method == 'rank':
+            relevance = float(rank_delta)
+        elif self.dataset.args.relevance_method == 'score':
+            relevance = float(score_delta * 10)
+        print(relevance)
+        return round(relevance, 4)
+    
+
     def __init__(self,
                  model: Model,
                  dataset: Dataset,
@@ -211,8 +223,7 @@ class PostTrainingEngine(ExplanationEngine):
         score_worsening = pt_target_entity_score - base_pt_target_entity_score if self.model.is_minimizer() else base_pt_target_entity_score - pt_target_entity_score
 
         # note: the formulation is very different from the addition one
-        relevance = float(rank_worsening + self.sigmoid(score_worsening))
-        relevance = round(relevance, 4)
+        relevance = self.get_removel_relevance(rank_worsening, score_worsening)
 
         end_time = time.time()
         execution_time = end_time - start_time
@@ -402,9 +413,8 @@ class PostTrainingEngine(ExplanationEngine):
         # print(optimizer.epochs)
         t = time.time()
         optimizer.train(train_samples=kelpie_train_samples)
-        if self.print_count < 5:
-            self.print_count += 1
-            print(f'\t\t[post_train_time: {round(time.time() - t, 4)}]')
+        print('len(kelpie_train_samples)', len(kelpie_train_samples))
+        print(f'\t\t[post_train_time: {round(time.time() - t, 4)}]')
         return kelpie_model_to_post_train
 
 

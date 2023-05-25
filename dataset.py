@@ -306,6 +306,11 @@ class Dataset:
 
         return output
 
+    def forward_triple(self, triple):
+        if triple[1] < self.num_direct_relations:
+            return triple
+        else:
+            return (triple[2], triple[1] - self.num_direct_relations, triple[0])
 
     def _compute_relation_2_type(self):
         """

@@ -141,7 +141,8 @@ class Kelpie:
                                                                     sample_to_explain=sample_to_explain,
                                                                     perspective=perspective,
                                                                     relevance_threshold=self.relevance_threshold,
-                                                                    max_explanation_length=self.max_explanation_length)
+                                                                    max_explanation_length=self.max_explanation_length,
+                                                                    engine=self.engine)
         
         explanations_with_relevance = explanation_builder.build_explanations(samples_to_remove=most_promising_samples)
         return explanations_with_relevance

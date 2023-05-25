@@ -9,6 +9,7 @@ from explanation_builders.explanation_builder import NecessaryExplanationBuilder
 import numpy
 import os
 from collections import defaultdict
+import numpy as np
 
 DEAFAULT_XSI_THRESHOLD = 5
 
@@ -24,7 +25,7 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
                  sample_to_explain: Tuple[Any, Any, Any],
                  perspective: str,
                  relevance_threshold: float = None,
-                 max_explanation_length: int = -1):
+                 max_explanation_length: int = -1, engine=None):
         """
         StochasticSufficientExplanationBuilder object constructor.
 
@@ -43,13 +44,16 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
         self.args = dataset.args
         self.xsi = relevance_threshold if relevance_threshold is not None else DEAFAULT_XSI_THRESHOLD
         self.window_size = 10
-        self.engine = PostTrainingEngine(model=model,
-                                         dataset=dataset,
-                                         hyperparameters=hyperparameters)
+        # self.engine = PostTrainingEngine(model=model,
+        #                                  dataset=dataset,
+        #                                  hyperparameters=hyperparameters)
+        self.engine = engine
 
 
     def prefilter_negative(self, all_rules, top_k):
         for i in range(0, top_k):
+            if i >= len(all_rules):
+                break
             if all_rules[i][1] < 0:
                 break
         print(f'select top rules: {i}/{len(all_rules)+1}')
@@ -65,12 +69,18 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
         print(f'all possible rules with length 1:', len(samples_to_remove))
         # get relevance for rules with length 1 (that is, samples)
         sample_2_relevance = self.extract_rules_with_length_1(samples_to_remove=samples_to_remove)
+        samples_len1 = list(sample_2_relevance.keys())
         
         samples_with_relevance = sorted(sample_2_relevance.items(), key=lambda x: x[1], reverse=True)
         all_rules_with_relevance += [([x], y) for (x, y) in samples_with_relevance]
         
         samples_number = len(samples_with_relevance)
 
+        print('\tBest rule with length 1', all_rules_with_relevance)
+        if len(all_rules_with_relevance) == 0:
+            print('\tNo valid rules for length 1')
+            return []
+        
         best_rule, best_rule_relevance = all_rules_with_relevance[0]
         if best_rule_relevance > self.xsi:
             print('\tEarly termination after length 1')
@@ -81,7 +91,7 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
         # stop if you have too few samples (e.g. if you have only 2 samples, you can not extract rules of length 3)
         # or if you get to the length cap
         while cur_rule_length <= samples_number and cur_rule_length <= self.length_cap:
-            rule_2_relevance = self.extract_rules_with_length(samples_to_remove=samples_to_remove,
+            rule_2_relevance = self.extract_rules_with_length(samples_to_remove=samples_len1,
                                                               length=cur_rule_length,
                                                               sample_2_relevance=sample_2_relevance)
             current_rules_with_relevance = sorted(rule_2_relevance.items(), key=lambda x: x[1], reverse=True)
@@ -112,6 +122,8 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
         # this is an exception: all samples (= rules with length 1) are tested
         for i, sample_to_remove in enumerate(samples_to_remove):
             relevance = self._compute_relevance_for_rule(([sample_to_remove]))
+            if relevance < 1:
+                continue
             sample_2_relevance[sample_to_remove] = relevance
             print(f"\t{i+1}/{len(samples_to_remove)}: {self.dataset.printable_sample(sample_to_remove)} {relevance}")
         return sample_2_relevance
@@ -142,6 +154,8 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
             current_rule, current_preliminary_score = all_possible_rules_with_preliminary_scores[i]
 
             current_rule_relevance = self._compute_relevance_for_rule(current_rule)
+            if current_rule_relevance < 1:
+                continue
             rule_2_relevance[current_rule] = current_rule_relevance
             print(f"\trule: {self.dataset.printable_nple(current_rule)} {current_rule_relevance}")
 
@@ -188,18 +202,29 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
                 
                 if terminate:
                     print("Terminate!")
-                    self.terminate_at(length, i)
                 else:
                     print()
 
         return rule_2_relevance
 
     def _compute_relevance_for_rule(self, nple_to_remove: list):
-        rule_length = len(nple_to_remove)
-
         # convert the nple to remove into a list
         assert (len(nple_to_remove[0]) == 3)
 
+        rel_lis = []
+        for _ in range(5):
+            relevance = self._compute_relevance_for_rule_single(nple_to_remove)
+            rel_lis.append(relevance)
+        
+        if np.mean(rel_lis) > 1:
+            print('The relevance is valid!', nple_to_remove)
+            for _ in range(45):
+                relevance = self._compute_relevance_for_rule_single(nple_to_remove)
+                rel_lis.append(relevance)
+        return np.mean(rel_lis)
+
+
+    def _compute_relevance_for_rule_single(self, nple_to_remove: list):
         relevance, \
         original_best_entity_score, original_target_entity_score, original_target_entity_rank, \
         base_pt_best_entity_score, base_pt_target_entity_score, base_pt_target_entity_rank, \
@@ -222,7 +247,7 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
                     str(relevance) + ";" + \
                     str(execution_time)
 
-        with open(os.path.join(self.args.output_folder, "output_details_" + str(rule_length) + ".csv"), "a") as output_file:
+        with open(os.path.join(self.args.output_folder, f"output_details_{len(nple_to_remove)}.csv"), "a") as output_file:
             output_file.writelines([cur_line + "\n"])
 
         return relevance

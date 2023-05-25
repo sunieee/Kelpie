@@ -43,7 +43,6 @@ class ConvE(Model):
         self.args = dataset.args
         self.embedding_model = self.args.embedding_model
         self.kelpie_entity_embedding = None
-        self.tail_restrain = self.args.tail_restrain
         self.name = "ConvE"
         self.dataset = dataset
         self.num_entities = dataset.num_entities                                # number of entities in dataset
@@ -241,8 +240,8 @@ class ConvE(Model):
         relations = set(samples[:, 1].tolist())
         # print(len(relations), end=split)
         tail_set = []
-        for relation in relations:
-            tail_set += self.tail_restrain[relation]
+        # for relation in relations:
+        #     tail_set += self.tail_restrain[relation]
         lis = list(set(tail_set))
         lis.sort()
         return lis
