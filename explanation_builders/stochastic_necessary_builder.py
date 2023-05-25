@@ -212,13 +212,13 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
         assert (len(nple_to_remove[0]) == 3)
 
         rel_lis = []
-        for _ in range(5):
+        for _ in range(10):
             relevance = self._compute_relevance_for_rule_single(nple_to_remove)
             rel_lis.append(relevance)
         
         if np.mean(rel_lis) > 1:
             print('The relevance is valid!', nple_to_remove)
-            for _ in range(45):
+            for _ in range(40):
                 relevance = self._compute_relevance_for_rule_single(nple_to_remove)
                 rel_lis.append(relevance)
         return np.mean(rel_lis)
