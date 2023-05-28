@@ -19,7 +19,7 @@ explain() {
 
         CUDA_VISIBLE_DEVICES=$device python explain.py --dataset $dataset --method=$method \
                 --model_path $model_path --explain_path $explain_path \
-                --output_folder $output_folder  --run $run  --relevance_method score # > $output_folder/output.log
+                --output_folder $output_folder  --run $run --relevance_method hybrid # > $output_folder/output.log
                 # --specify_relation --ignore_inverse \
                 # --embedding_model "$embedding_model" --train_restrain
 }

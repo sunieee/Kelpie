@@ -94,6 +94,8 @@ else:
     kelpie = Kelpie(model=model, dataset=dataset, hyperparameters=hyperparameters, prefilter_type=prefilter,
                     relevance_threshold=relevance_threshold)
 
+xrule = Xrule(model, dataset)
+
 
 print('dataset size:', dataset.train_samples.shape, len(dataset.entity_id_2_name), len(dataset.relation_id_2_name))
 
@@ -188,17 +190,26 @@ for i, fact in enumerate(testing_facts):
         continue
     
     ech(f'input of fact {dataset.sample_to_fact(sample_to_explain, True)} {rank}')
-    rule_samples_with_relevance = kelpie.explain_necessary(sample_to_explain=sample_to_explain,
-                                                            perspective="head",
-                                                            num_promising_samples=args.prefilter_threshold)
-    print_line(f'output of fact {triple2str(fact)}')
-    print_facts(rule_samples_with_relevance, sample_to_explain)
+    # rule_samples_with_relevance = kelpie.explain_necessary(sample_to_explain=sample_to_explain,
+    #                                                         perspective="head",
+    #                                                         num_promising_samples=args.prefilter_threshold)
+    # print_line(f'output of fact {triple2str(fact)}')
+    # print_facts(rule_samples_with_relevance, sample_to_explain)
 
-ech('explaination output:')
-end_time = time.time()
-print("Explain time: " + str(end_time - start_time) + " seconds")
-with open(os.path.join(args.output_folder, f"{args.mode}.txt"), "w") as output:
-    output.writelines(output_lines)
+    # for cur_rule_with_relevance in rule_samples_with_relevance:
+    #     cur_rule_samples, cur_relevance = cur_rule_with_relevance
+    #     if len(cur_rule_samples) == 1:
+    #         print('finding all path for', cur_rule_samples[0])
+    #         target = cur_rule_samples[0][-1] if head_id == cur_rule_samples[0][0] else cur_rule_samples[0][0]
+    #         path = dataset.find_all_path(sample_to_explain, target)
+    explanations = xrule.explain_necessary(sample_to_explain)
 
-print('count_dic', count_dic)
-print('count_dic_mean', {k: np.mean(v) for k, v in count_dic.items()})
+
+# ech('explaination output:')
+# end_time = time.time()
+# print("Explain time: " + str(end_time - start_time) + " seconds")
+# with open(os.path.join(args.output_folder, f"{args.mode}.txt"), "w") as output:
+#     output.writelines(output_lines)
+
+# print('count_dic', count_dic)
+# print('count_dic_mean', {k: np.mean(v) for k, v in count_dic.items()})

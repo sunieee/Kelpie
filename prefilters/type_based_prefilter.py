@@ -23,30 +23,12 @@ class TypeBasedPreFilter(PreFilter):
         """
         super().__init__(model, dataset)
 
-        self.entity_id_2_train_samples = {}
-        self.entity_id_2_relation_vector = {}
-
-        self.threadLock = threading.Lock()
         self.counter = 0
+        self.threadLock = threading.Lock()
         self.thread_pool = Pool(processes=MAX_PROCESSES)
+        
 
-        for (h, r, t) in dataset.train_samples:
-
-            if not h in self.entity_id_2_train_samples:
-                self.entity_id_2_train_samples[h] = [(h, r, t)]
-                self.entity_id_2_relation_vector[h] = np.zeros(2*self.dataset.num_relations)
-
-            if not t in self.entity_id_2_train_samples:
-                self.entity_id_2_train_samples[t] = [(h, r, t)]
-                self.entity_id_2_relation_vector[t] = np.zeros(2*self.dataset.num_relations)
-
-            self.entity_id_2_train_samples[h].append((h, r, t))
-            self.entity_id_2_train_samples[t].append((h, r, t))
-            self.entity_id_2_relation_vector[h][r] += 1
-            self.entity_id_2_relation_vector[t][r+self.dataset.num_relations] += 1
-
-
-    def top_promising_samples_for(self,
+    def top_promising_explanations(self,
                                   sample_to_explain:Tuple[Any, Any, Any],
                                   perspective:str,
                                   top_k=50,
@@ -72,7 +54,7 @@ class TypeBasedPreFilter(PreFilter):
         head, relation, tail = sample_to_explain
 
         if perspective == "head":
-            samples_featuring_head = self.entity_id_2_train_samples[head]
+            samples_featuring_head = self.dataset.entity_id_2_train_samples[head]
 
             worker_processes_inputs = [(len(samples_featuring_head), sample_to_explain, x, perspective, verbose) for x
                                        in samples_featuring_head]
@@ -89,7 +71,7 @@ class TypeBasedPreFilter(PreFilter):
             sorted_promising_samples = [x[0] for x in samples_featuring_head_with_promisingness]
 
         else:
-            samples_featuring_tail = self.entity_id_2_train_samples[tail]
+            samples_featuring_tail = self.dataset.entity_id_2_train_samples[tail]
 
             worker_processes_inputs = [(len(samples_featuring_tail), sample_to_explain, x, perspective, verbose) for x
                                        in samples_featuring_tail]
@@ -139,6 +121,6 @@ class TypeBasedPreFilter(PreFilter):
         return promisingness
 
     def _cosine_similarity(self, entity1_id, entity2_id):
-        entity1_vector = self.entity_id_2_relation_vector[entity1_id]
-        entity2_vector = self.entity_id_2_relation_vector[entity2_id]
+        entity1_vector = self.dataset.entity_id_2_relation_vector[entity1_id]
+        entity2_vector = self.dataset.entity_id_2_relation_vector[entity2_id]
         return np.inner(entity1_vector, entity2_vector) / (np.linalg.norm(entity1_vector) * np.linalg.norm(entity2_vector))

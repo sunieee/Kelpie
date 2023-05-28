@@ -25,25 +25,12 @@ class TopologyPreFilter(PreFilter):
         super().__init__(model, dataset)
 
         self.max_path_length = 5
-        self.entity_id_2_train_samples = {}
         self.threadLock = threading.Lock()
         self.counter = 0
         self.thread_pool = Pool(processes=MAX_PROCESSES)
 
-        for (h, r, t) in dataset.train_samples:
 
-            if h in self.entity_id_2_train_samples:
-                self.entity_id_2_train_samples[h].append((h, r, t))
-            else:
-                self.entity_id_2_train_samples[h] = [(h, r, t)]
-
-            if t in self.entity_id_2_train_samples:
-                self.entity_id_2_train_samples[t].append((h, r, t))
-            else:
-                self.entity_id_2_train_samples[t] = [(h, r, t)]
-
-
-    def top_promising_samples_for(self,
+    def top_promising_explanations(self,
                                   sample_to_explain:Tuple[Any, Any, Any],
                                   perspective:str,
                                   top_k=50,
@@ -69,7 +56,7 @@ class TopologyPreFilter(PreFilter):
 
         start_entity, end_entity = (head, tail) if perspective == "head" else (tail, head)
 
-        samples_featuring_start_entity = self.entity_id_2_train_samples[start_entity]
+        samples_featuring_start_entity = self.dataset.entity_id_2_train_samples[start_entity]
 
         sample_to_analyze_2_min_path_length = {}
         sample_to_analyze_2_min_path = {}
@@ -102,20 +89,20 @@ class TopologyPreFilter(PreFilter):
         if verbose:
             print("\tAnalyzing sample " + str(i) + " on " + str(all_samples_number) + ": " + self.dataset.printable_sample(sample_to_analyze))
 
-        sample_to_analyze_head, sample_to_analyze_relation, sample_to_analyze_tail = sample_to_analyze
+        h, r, t = sample_to_analyze
 
         cur_path_length = 1
         next_step_incomplete_paths = []   # each incomplete path is a couple (list of triples in this path, accretion entity)
 
         # if the sample to analyze is already a path from the start entity to the end entity,
         # then the shortest path length is 1 and you can move directly to the next sample to analyze
-        if (sample_to_analyze_head == start_entity and sample_to_analyze_tail == end_entity) or \
-                (sample_to_analyze_tail == start_entity and sample_to_analyze_head == end_entity):
+        if (h == start_entity and t == end_entity) or \
+                (t == start_entity and h == end_entity):
             return cur_path_length, \
-                   [(sample_to_analyze_head, sample_to_analyze_relation, sample_to_analyze_tail)]
+                   [(h, r, t)]
 
 
-        initial_accretion_entity = sample_to_analyze_tail if sample_to_analyze_head == start_entity else sample_to_analyze_head
+        initial_accretion_entity = t if h == start_entity else h
         next_step_incomplete_paths.append(([sample_to_analyze], initial_accretion_entity))
 
         # this set contains the entities seen so far in the search.
@@ -134,7 +121,7 @@ class TopologyPreFilter(PreFilter):
             #print("\tIncomplete paths of length " + str(cur_path_length - 1) + " to analyze: " + str(len(cur_step_incomplete_paths)))
             #print("\tExpanding them to length: " + str(cur_path_length))
             for (incomplete_path, accretion_entity) in cur_step_incomplete_paths:
-                samples_featuring_accretion_entity = self.entity_id_2_train_samples[accretion_entity]
+                samples_featuring_accretion_entity = self.dataset.entity_id_2_train_samples[accretion_entity]
 
                 # print("Current path: " + str(incomplete_path))
 

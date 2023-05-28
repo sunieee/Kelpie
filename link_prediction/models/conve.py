@@ -9,6 +9,7 @@ from dataset import Dataset
 from kelpie_dataset import KelpieDataset
 from link_prediction.models.model import *
 from link_prediction.models.model import Dataset
+from typing import List
 
 class ConvE(Model):
     """
@@ -74,6 +75,7 @@ class ConvE(Model):
         self.convolutional_layer = torch.nn.Conv2d(1, self.num_conv_filters, self.conv_kernel_shape, 1, 0, bias=True).cuda()
         #self.register_parameter('b', Parameter(torch.zeros(self.num_entities)))     # ?
         self.hidden_layer = torch.nn.Linear(self.hidden_layer_size, self.dimension).cuda()
+        self.end_post_train()
 
         # create the embeddings for entities and relations as Parameters.
         # We do not use the torch.Embeddings module here in order to keep the code uniform to the post-training model,
@@ -189,7 +191,27 @@ class ConvE(Model):
         scores = torch.sigmoid(scores)
         output_scores = torch.diagonal(scores)
         return output_scores
+    
+    def start_post_train(self, trainable_indices: List[int], init_tensor: torch.Tensor = None):
+        # get ready for post-training
+        self.frozen_entity_embeddings = self.entity_embeddings.clone().detach()
+        self.trainable_indices = trainable_indices
+        self.frozen_indices = list(set(range(self.entity_embeddings.shape[0])) - set(trainable_indices))
+        if init_tensor is None:
+            init_tensor = torch.rand_like(self.entity_embeddings[self.trainable_indices]) - 0.5
+        init_embeddings = self.entity_embeddings[self.trainable_indices] + init_tensor
+        self.trainable_entity_embeddings = nn.Parameter(init_embeddings)
 
+    def end_post_train(self):
+        # end post-training
+        self.frozen_entity_embeddings = None
+        self.trainable_indices = None
+        self.frozen_indices = None
+        self.trainable_entity_embeddings = None
+
+    def update_embeddings(self):
+        # update embeddings
+        self.entity_embeddings[self.trainable_indices] = self.trainable_entity_embeddings
 
     def all_scores(self, samples: np.array, restrain=False) -> np.array:
         """
@@ -198,8 +220,17 @@ class ConvE(Model):
             :return: a 2-dimensional numpy array that, for each sample, contains a row for each passed sample
                      and a column for each possible tail
         """
-        entity_embeddings, relation_embeddings = self.get_embedding()
-        entity_embeddings, relation_embeddings = self.entity_embeddings, self.relation_embeddings
+        # entity_embeddings, relation_embeddings = self.get_embedding()
+        relation_embeddings = self.relation_embeddings
+
+        if self.trainable_indices is not None:
+            entity_embeddings = torch.zeros_like(self.entity_embeddings, device='cuda')
+            with torch.no_grad():
+                entity_embeddings[self.frozen_indices] = self.frozen_entity_embeddings[self.frozen_indices]
+            entity_embeddings[self.trainable_indices] = self.trainable_entity_embeddings
+        else:
+            entity_embeddings  = self.entity_embeddings
+
 
         # list of entity embeddings for the heads of the facts
         head_embeddings = entity_embeddings[samples[:, 0]]

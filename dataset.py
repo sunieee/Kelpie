@@ -8,6 +8,7 @@ import numpy
 from config import ROOT
 import torch as th
 import dgl
+import numpy as np
 
 DATA_PATH = os.path.join(ROOT, "data")
 FB15K = "FB15k"
@@ -23,6 +24,7 @@ ONE_TO_ONE="1-1"
 ONE_TO_MANY="1-N"
 MANY_TO_ONE="N-1"
 MANY_TO_MANY="N-N"
+MAX_PATH_LENGTH=3
 
 # identify in/out edges, compute edge norm for each and store in edata
 def in_out_norm(graph):
@@ -229,6 +231,21 @@ class Dataset:
             if args.embedding_model and args.embedding_model != 'none':
                 print('making graph...')    
                 self.make_graph()
+
+            # make the entity_id_2_train_samples and entity_id_2_relation_vector dicts
+            self.make_dic()
+
+
+    def make_dic(self):
+        self.entity_id_2_train_samples = defaultdict(list)
+        self.entity_id_2_relation_vector = defaultdict(lambda: np.zeros(2*self.num_relations))
+
+        for (h, r, t) in self.train_samples:
+            self.entity_id_2_train_samples[h].append((h, r, t))
+            self.entity_id_2_train_samples[t].append((h, r, t))
+            self.entity_id_2_relation_vector[h][r] += 1
+            self.entity_id_2_relation_vector[t][r+self.num_relations] += 1
+
 
     def _read_triples(self, triples_path: str, separator="\t"):
         """
@@ -469,3 +486,131 @@ class Dataset:
 
     def printable_nple(self, nple: list):
         return" + ".join([self.printable_sample(sample) for sample in nple])
+    
+    @staticmethod
+    def entity_in_path(entity, path):
+        for sample in path:
+            if entity in [sample[0], sample[2]]:
+                return True
+        return False
+    
+    def find_all_path_within_k_hop(self, h, t, k=MAX_PATH_LENGTH):
+        """find all path between head and tail within k-hop
+
+        Args:
+            h (_type_): _description_
+            t (_type_): _description_
+            k (int, optional): _description_. Defaults to MAX_PATH_LENGTH.
+        """
+        if k == 0:
+            return []
+
+        paths = []
+        for sample in self.entity_id_2_train_samples[h]:
+            target = sample[-1] if sample[0] == h else sample[0]
+            if target == t:
+                paths.append([sample])
+            
+            new_paths = self.find_all_path_within_k_hop(target, t, k-1)
+            for new_path in new_paths:
+                if not self.entity_in_path(h, new_path):
+                    paths.append([sample] + new_path)
+        return paths
+
+
+    def find_all_path_on_neighbor(self, prediction, neighbor):
+        """find all path for a given prediction and neighbor of head entity
+
+        Args:
+            prediction (_type_): _description_
+            neighbor (_type_): _description_
+        """
+        head, rel, tail = prediction
+        # 1-hop path
+        if neighbor == tail:
+            print(f"{self.sample_to_fact(prediction, True)} all paths: neighbor is tail")
+            return [[prediction]]
+
+        print('neighour samples', len(self.entity_id_2_train_samples[neighbor]), self.entity_id_2_train_samples[neighbor])
+        # 2-hop path
+        paths = []
+        two_hop_neighbors = defaultdict(list)
+        for sample in self.entity_id_2_train_samples[neighbor]:
+            target = sample[-1] if sample[0] == neighbor else sample[0]
+            if target == head:
+                continue
+            two_hop_neighbors[target].append(sample)
+            if target == tail:
+                paths.append([prediction, sample])
+        two_hop_paths_count = len(paths)
+        print('2-hop paths', paths)
+
+        # 3-hop path
+        for sample in self.entity_id_2_train_samples[tail]:
+            target = sample[-1] if sample[0] == tail else sample[0]
+            if target in two_hop_neighbors:
+                for two_hop_sample in two_hop_neighbors[target]:
+                    paths.append([prediction, two_hop_sample, sample])
+
+        print(f"{self.sample_to_fact(prediction, True)} all paths: {two_hop_paths_count} + {len(paths) - two_hop_paths_count} = {len(paths)}")
+        return paths
+    
+
+    def has_valid_neighbor(self, prediction, incomplete_path_entities=[]):
+        """Check if the last entity has a path to tail entity
+
+        Args:
+            prediction (_type_): the sample to explain
+            incomplete_path_entities (_type_): entities in the path (exclude head, tail)
+        """
+        # print('[has_valid_neighbor]incomplete path', incomplete_path_entities)
+        if MAX_PATH_LENGTH == len(incomplete_path_entities):
+            return False
+        
+        h, r, t = prediction
+        trainable_entities = [h] + incomplete_path_entities
+        target_entity = trainable_entities[-1]
+        # print('[has_valid_neighbor]searching for', target_entity, len(self.entity_id_2_train_samples[target_entity]))
+
+        for sample in self.entity_id_2_train_samples[target_entity]:
+            neighbor = sample[-1] if sample[0] == target_entity else sample[0]
+
+            if neighbor == t:
+                return True
+
+            elif neighbor not in incomplete_path_entities + [h]:
+                return self.has_valid_neighbor(prediction, incomplete_path_entities + [neighbor])
+
+        return False
+
+
+    def find_all_neighbor_triples(self, prediction, incomplete_path_entities=[]):
+        """From incomplete_path_entities, find all neighbor triples of the last entity in the path
+        The remain length of path should be less than max_remain_length
+
+        Args:
+            prediction (_type_): the sample to explain
+            incomplete_path_entities (_type_): entities in the path (exclude head, tail)
+        """
+        if MAX_PATH_LENGTH == len(incomplete_path_entities):
+            return []
+        
+        h, r, t = prediction
+        trainable_entities = [h] + incomplete_path_entities
+        target_entity = trainable_entities[-1]
+
+        # print('searching for', target_entity, 'on', self.entity_id_2_train_samples[target_entity])
+
+        neighbor_triples = []
+        for sample in self.entity_id_2_train_samples[target_entity]:
+            neighbor = sample[-1] if sample[0] == target_entity else sample[0]
+
+            if neighbor == t:
+                neighbor_triples.append(sample)
+
+            elif neighbor not in incomplete_path_entities + [h]:
+                # print('analysing neighbor:', neighbor)
+                if self.has_valid_neighbor(prediction, incomplete_path_entities + [neighbor]):
+                    neighbor_triples.append(sample)
+
+        return neighbor_triples

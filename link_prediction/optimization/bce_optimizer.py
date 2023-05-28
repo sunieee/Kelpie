@@ -9,6 +9,14 @@ from link_prediction.models.conve import ConvE
 from link_prediction.models.model import Model, BATCH_SIZE, LABEL_SMOOTHING, LEARNING_RATE, DECAY, EPOCHS
 from link_prediction.optimization.optimizer import Optimizer
 
+
+def rd(x):
+    return round(x, 4)
+
+def tensor_head(t):
+    return [rd(x) for x in t.view(-1)[:3].detach().cpu().numpy().tolist()]
+
+
 class BCEOptimizer(Optimizer):
     """
         This optimizer relies on BCE loss.
@@ -59,7 +67,8 @@ class BCEOptimizer(Optimizer):
               train_samples: np.array,
               save_path: str = None,
               evaluate_every:int =-1,
-              valid_samples:np.array = None):
+              valid_samples:np.array = None,
+              post_train: bool = False):
 
         all_training_samples = np.vstack((train_samples, self.dataset.invert_samples(train_samples)))
         er_vocab = self.extract_er_vocab(all_training_samples)
@@ -69,7 +78,7 @@ class BCEOptimizer(Optimizer):
         self.model.cuda()
 
         for e in range(1, self.epochs+1):
-            self.epoch(er_vocab=er_vocab, er_vocab_pairs=er_vocab_pairs, batch_size=self.batch_size)
+            self.epoch(er_vocab=er_vocab, er_vocab_pairs=er_vocab_pairs, batch_size=self.batch_size, post_train=post_train)
 
             if evaluate_every > 0 and valid_samples is not None and e % evaluate_every == 0:
                 self.model.eval()
@@ -106,7 +115,8 @@ class BCEOptimizer(Optimizer):
     def epoch(self,
               er_vocab,
               er_vocab_pairs,
-              batch_size: int):
+              batch_size: int,
+              post_train: bool = False):
 
         if self.tail_restrain is None:
             np.random.shuffle(er_vocab_pairs)
@@ -121,7 +131,13 @@ class BCEOptimizer(Optimizer):
                                                     er_vocab_pairs=er_vocab_pairs,
                                                     batch_start=batch_start,
                                                     batch_size=batch_size)
-                l = self.step_on_batch(batch, targets)
+                l = self.step_on_batch(batch, targets, post_train=post_train)
+
+                if post_train:
+                    # THIS IS EXTREMELY IMPORTANT BECAUSE THIS WILL PROPAGATE THE UPDATES
+                    # print(tensor_head(self.model.trainable_entity_embeddings))
+                    self.model.update_embeddings()
+
                 batch_start+=batch_size
                 bar.update(batch_size)
                 bar.set_postfix(loss=str(round(l.item(), 6)))
@@ -130,14 +146,21 @@ class BCEOptimizer(Optimizer):
                 self.scheduler.step()
 
 
-    def step_on_batch(self, batch, targets):
-
-        # if the batch has length 1 ( = this is the last batch) and the model has batch_norm layers,
-        # do not try to update the batch_norm layers, because they would not work.
-        if len(batch) == 1 and isinstance(self.model, ConvE):
-            self.model.batch_norm_1.eval()
-            self.model.batch_norm_2.eval()
-            self.model.batch_norm_3.eval()
+    def step_on_batch(self, batch, targets, post_train: bool = False):
+        if isinstance(self.model, ConvE):
+            if len(batch) == 1:
+                # if the batch has length 1 ( = this is the last batch) and the model has batch_norm layers,
+                # do not try to update the batch_norm layers, because they would not work.
+                self.model.batch_norm_1.eval()
+                self.model.batch_norm_2.eval()
+                self.model.batch_norm_3.eval()
+            if post_train:
+                # just making sure that these layers are still in eval() mode
+                self.model.batch_norm_1.eval()
+                self.model.batch_norm_2.eval()
+                self.model.batch_norm_3.eval()
+                self.model.convolutional_layer.eval()
+                self.model.hidden_layer.eval()
 
         self.optimizer.zero_grad()
         if self.train_restrain:

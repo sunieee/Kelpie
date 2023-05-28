@@ -30,6 +30,7 @@ from link_prediction.optimization.bce_optimizer import KelpieBCEOptimizer
 from link_prediction.optimization.multiclass_nll_optimizer import KelpieMultiClassNLLOptimizer
 from link_prediction.optimization.pairwise_ranking_optimizer import KelpiePairwiseRankingOptimizer
 from collections import OrderedDict
+from typing import List, Dict, Tuple, Union, Optional
 from kelpie_dataset import KelpieDataset
 
 parser = argparse.ArgumentParser(description="Model-agnostic tool for explaining link predictions")
@@ -129,7 +130,7 @@ parser.add_argument('--specify_relation', dest='specify_relation', default=False
                     help="whether specify relation when evaluate")
 
 parser.add_argument('--relevance_method', type=str, default='kelpie', 
-                    choices=['rank', 'score', 'kelpie'], help="the method to compute relevance")
+                    choices=['rank', 'score', 'kelpie', 'hybrid'], help="the method to compute relevance")
 
 # parser.add_argument('--sort', dest='sort', default=False, action='store_true',
 #                     help="whether sort the dataset")
@@ -238,6 +239,7 @@ else:
 
 model = TargetModel(dataset=dataset, hyperparameters=hyperparameters, init_random=True)
 model.to('cuda')
+
 if os.path.exists(args.model_path):
     ech(f'loading models from path: {args.model_path}')
     model.load_state_dict(torch.load(args.model_path))
@@ -245,9 +247,9 @@ else:
     ech(f'model does not exists! {args.model_path}')
     
 torch.save(model.state_dict(), f'{args.output_folder}/params.pth')
-state_dict = torch.load(f'{args.output_folder}/params.pth')
+args.state_dict = torch.load(f'{args.output_folder}/params.pth')
 
-post_train_times = 5
+post_train_times = 10
 
 if isinstance(model, ComplEx):
     kelpie_optimizer_class = KelpieMultiClassNLLOptimizer
@@ -269,6 +271,9 @@ def rd(x):
 def mean(lis):
     return rd(np.mean(lis))
 
+def tensor_head(t):
+    return [rd(x) for x in t.view(-1)[:3].detach().cpu().numpy().tolist()]
+
 def std(lis):
     return rd(np.std(lis))
 
@@ -276,9 +281,11 @@ def get_removel_relevance(rank_delta, score_delta):
     if args.relevance_method == 'kelpie':
         relevance = float(rank_delta + sigmoid(score_delta))
     elif args.relevance_method == 'rank':
-        relevance = float(rank_delta)
+        relevance = np.tanh(rank_delta) * 10
     elif args.relevance_method == 'score':
-        relevance = float(score_delta * 10)
+        relevance = np.tanh(score_delta) * 10
+    elif args.relevance_method == 'hybrid':
+        relevance = np.tanh(rank_delta) * 5 + np.tanh(score_delta) * 5
     return rd(relevance)
 
 def extract_detailed_performances(model: Model, sample: numpy.array):
@@ -311,14 +318,11 @@ def extract_detailed_performances(model: Model, sample: numpy.array):
 def extract_samples_with_entity(samples, entity_id):
     return samples[numpy.where(numpy.logical_or(samples[:, 0] == entity_id, samples[:, 2] == entity_id))]
 
+
 class KelpieExplanation:
     _original_model_results = {}  # map original samples to scores and ranks from the original model
     _base_pt_model_results = {}   # map original samples to scores and ranks from the base post-trained model
-
-    # The kelpie_cache is a simple LRU cache that allows reuse of KelpieDatasets and of base post-training results
-    # without need to re-build them from scratch every time.
-    _kelpie_dataset_cache_size = 20
-    _kelpie_dataset_cache = OrderedDict()
+    _kelpie_init_tensor_cache = OrderedDict()
 
     """
         Given a "sample to explain" (that is, a sample that the model currently predicts as true,
@@ -332,32 +336,58 @@ class KelpieExplanation:
         :param samples_to_remove:   the list of samples containing the perspective entity
                                     that we want to analyze the effect of, if added to the perspective entity
     """
-    df = pd.DataFrame(columns=['sample_to_explain', 'samples_to_remove', 'length', 'base_score', 'base_best', 'base_rank', 'pt_score', 'pt_best', 'pt_rank', 'rank_worsening', 'score_worsening', 'relevance'])
+    df = pd.DataFrame(columns=['sample_to_explain', 'identifier', 'samples_to_remove', 'incomplete_path_entities', 'length', 'base_score', 'base_best', 'base_rank', 'pt_score', 'pt_best', 'pt_rank', 'rank_worsening', 'score_worsening', 'relevance'])
+    
+    def _get_kelpie_init_tensor(self):
+        embeddings = []
+        for entity in self.trainable_entities:
+            if entity not in self._kelpie_init_tensor_cache:
+                kelpie_init_tensor_size = model.dimension if not isinstance(model, TuckER) else model.entity_dimension
+                self._kelpie_init_tensor_cache[entity] = torch.rand(1, kelpie_init_tensor_size, device='cuda') - 0.5
+            embeddings.append(self._kelpie_init_tensor_cache[entity])
+        return torch.cat(embeddings, dim=0)
+    
+    def _extract_training_samples(self) -> np.array:
+        original_train_samples = []
+        for entity in self.trainable_entities:
+            original_train_samples.extend(dataset.entity_id_2_train_samples[entity])
+        # stack a list of training samples, each of them is a tuple
+        self.original_train_samples = np.stack(original_train_samples, axis=0)
+
+        ids = []
+        for sample in self.samples_to_remove:
+            ids.append(self.original_train_samples.tolist().index(list(sample)))
+        self.training_samples = np.delete(self.original_train_samples, ids, axis=0)
+
 
     def __init__(self, 
                  sample_to_explain: Tuple[Any, Any, Any],
-                 samples_to_remove: list) -> None:
+                 samples_to_remove: List[Tuple],
+                 incomplete_path_entities: List=[]) -> None:
         logger.info("Create kelpie explanation on sample: %s", dataset.sample_to_fact(sample_to_explain, True))
         print("Removing sample:", [dataset.sample_to_fact(x, True) for x in samples_to_remove])
+        # for entity_id, samples in samples_to_remove.items():
+        #     print("Entity:", dataset.entity_id_to_name(entity_id), "Samples:", [dataset.sample_to_fact(x, True) for x in samples])
+
         self.sample_to_explain = sample_to_explain
         self.samples_to_remove = samples_to_remove
-        
+        self.incomplete_path_entities = incomplete_path_entities
+
         self.head = sample_to_explain[0]
-        self.kelpie_dataset = self._get_kelpie_dataset_for(original_entity_id=self.head)
-        self.kelpie_sample_to_predict = self.kelpie_dataset.as_kelpie_sample(original_sample=self.sample_to_explain)
-
-        kelpie_init_tensor_size = model.dimension if not isinstance(model, TuckER) else model.entity_dimension
-        self.kelpie_init_tensor = torch.rand(1, kelpie_init_tensor_size)
-
+        self.trainable_entities = [self.head] + self.incomplete_path_entities
+        self.kelpie_init_tensor = self._get_kelpie_init_tensor()
+        self.identifier = tuple(list(self.sample_to_explain) + self.incomplete_path_entities)
+        self._extract_training_samples()
+        
         base_pt_target_entity_score, \
         base_pt_best_entity_score, \
-        base_pt_target_entity_rank = self.post_training_results_multiple()
+        base_pt_target_entity_rank = self.base_post_training_multiple()
 
         pt_target_entity_score, \
         pt_best_entity_score, \
-        pt_target_entity_rank = self.post_training_results_multiple(self.samples_to_remove)
+        pt_target_entity_rank = self.post_training_multiple(self.training_samples)
 
-        rank_worsening = pt_target_entity_rank - base_pt_target_entity_rank
+        rank_worsening = (pt_target_entity_rank - base_pt_target_entity_rank) / base_pt_target_entity_rank
         score_worsening = base_pt_target_entity_score - pt_target_entity_score
         if model.is_minimizer():
             score_worsening *= -1
@@ -366,7 +396,9 @@ class KelpieExplanation:
 
         self.relevance = get_removel_relevance(rank_worsening, score_worsening)
         self.ret = {'sample_to_explain': dataset.sample_to_fact(sample_to_explain, True),
+                'identifier': self.identifier,
                 'samples_to_remove': [dataset.sample_to_fact(x, True) for x in samples_to_remove],
+                'incomplete_path_entities': [dataset.entity_id_2_name[x] for x in incomplete_path_entities],
                 'length': len(samples_to_remove),
                 'base_score': base_pt_target_entity_score,
                 'base_best': base_pt_best_entity_score,
@@ -382,41 +414,26 @@ class KelpieExplanation:
         self.df.to_csv(os.path.join(args.output_folder, f"output_details.csv"), index=False)
         logger.info(f"Kelpie explanation created. {str(self.ret)}")
 
+    def base_post_training_multiple(self):
+        if self.identifier in self._base_pt_model_results:
+            return self._base_pt_model_results[self.identifier]
 
-    def post_training_results_multiple(self, samples_to_remove: list = []):
-        if len(samples_to_remove) == 0 and self.sample_to_explain in self._base_pt_model_results:
-            return self._base_pt_model_results[self.sample_to_explain]
+        self._base_pt_model_results[self.identifier] = self.post_training_multiple(self.original_train_samples)
+        return self._base_pt_model_results[self.identifier]
+
+    def is_valid(self):
+        return self.relevance > 1
+
+    def post_training_multiple(self, training_samples):
         results = []
-        logger.info(f'[post_training_results_multiple] {len(self.kelpie_dataset.kelpie_train_samples)} - {len(samples_to_remove)}, {post_train_times} times x {hyperparameters[RETRAIN_EPOCHS]} epoches')
+        logger.info(f'[post_training_multiple] {len(training_samples)} samples, {post_train_times} times x {hyperparameters[RETRAIN_EPOCHS]} epoches')
         for _ in tqdm(range(post_train_times)):
-            # results.append(self.post_training_results(samples_to_remove))
-            results.append(self.post_training_save(samples_to_remove))
+            results.append(self.post_training_save(self.training_samples))
         target_entity_score, \
         best_entity_score, \
         target_entity_rank = zip(*results)
-        if len(samples_to_remove) == 0:
-            self._base_pt_model_results[self.sample_to_explain] = mean(target_entity_score), mean(best_entity_score), mean(target_entity_rank)
         logger.info(f'score: {mean(target_entity_score)} ± {std(target_entity_score)}, best: {mean(best_entity_score)} ± {std(best_entity_score)}, rank: {mean(target_entity_rank)} ± {std(target_entity_rank)}')
         return mean(target_entity_score), mean(best_entity_score), mean(target_entity_rank)
-
-    def _get_kelpie_dataset_for(self, original_entity_id: int) -> KelpieDataset:
-        """
-        Return the value of the queried key in O(1).
-        Additionally, move the key to the end to show that it was recently used.
-
-        :param original_entity_id:
-        :return:
-        """
-
-        if original_entity_id not in self._kelpie_dataset_cache:
-            kelpie_dataset = KelpieDataset(dataset=dataset, entity_id=original_entity_id)
-            self._kelpie_dataset_cache[original_entity_id] = kelpie_dataset
-            self._kelpie_dataset_cache.move_to_end(original_entity_id)
-
-            if len(self._kelpie_dataset_cache) > self._kelpie_dataset_cache_size:
-                self._kelpie_dataset_cache.popitem(last=False)
-
-        return self._kelpie_dataset_cache[original_entity_id]
 
     def original_results(self) :
         sample = self.sample_to_explain
@@ -426,126 +443,203 @@ class KelpieExplanation:
             target_entity_rank = extract_detailed_performances(model, sample)
             self._original_model_results[sample] = (target_entity_score, best_entity_score, target_entity_rank)
         return self._original_model_results[sample]
+
     
-    def post_training_clone(self, samples_to_remove: numpy.array=[]):
-        print('origin', extract_detailed_performances(model, self.sample_to_explain))
-        
-        post_model = PostConvE(model, self.head, self.kelpie_init_tensor)
-        post_model = post_model.to('cuda')
-        # Now you can do your training. Only the entity_embeddings for self.head will get updated...
-        # optimizer = kelpie_optimizer_class(model=post_model,
-        #                                     hyperparameters=hyperparameters,
-        #                                     verbose=False)
-        optimizer = Optimizer(model=post_model, hyperparameters=hyperparameters, verbose=False)
-        optimizer.epochs = hyperparameters[RETRAIN_EPOCHS]
+    def post_training_save(self, post_train_samples: numpy.array=[]):
+        model = TargetModel(dataset=dataset, hyperparameters=hyperparameters)
+        model = model.to('cuda')
+        model.load_state_dict(state_dict=args.state_dict)
 
-        original_train_samples = extract_samples_with_entity(dataset.train_samples, self.head)
-        ids = []
-        for sample in samples_to_remove:
-            ids.append(original_train_samples.tolist().index(list(sample)))
-        post_train_samples = np.delete(original_train_samples, ids, axis=0)
-
-        print('original, post_train = ', len(original_train_samples), len(post_train_samples))
-        # post_train_samples = torch.tensor(post_train_samples).to('cuda')
-        optimizer.train(train_samples=post_train_samples)
-        ret = extract_detailed_performances(post_model, self.sample_to_explain)
-        print('pt', ret)
-
-        return ret
-    
-    def post_training_directly(self, samples_to_remove: numpy.array=[]):
-        print('origin', extract_detailed_performances(model, self.sample_to_explain))
-
-        # for param in model.parameters():
-        #     param.requires_grad = False
-        
-        frozen_entity_embeddings = model.entity_embeddings.clone().detach()
-        entity_embeddings = frozen_entity_embeddings.clone()
-        trainable_head_embedding = torch.nn.Parameter(self.kelpie_init_tensor, requires_grad=True)
-        entity_embeddings[self.head] = trainable_head_embedding
-        model.entity_embeddings = torch.nn.Parameter(entity_embeddings)
-
-        # Now you can do your training. Only the entity_embeddings for self.head will get updated...
-        optimizer = Optimizer(model=model, hyperparameters=hyperparameters, verbose=False)
-        optimizer.epochs = hyperparameters[RETRAIN_EPOCHS]
-
-        original_train_samples = extract_samples_with_entity(dataset.train_samples, self.head)
-        ids = []
-        for sample in samples_to_remove:
-            ids.append(original_train_samples.tolist().index(list(sample)))
-        post_train_samples = np.delete(original_train_samples, ids, axis=0)
-
-        print('original, post_train = ', len(original_train_samples), len(post_train_samples))
-        optimizer.train(train_samples=post_train_samples)
-        ret = extract_detailed_performances(model, self.sample_to_explain)
-        print('pt', ret)
-
-        model.entity_embeddings = torch.nn.Parameter(frozen_entity_embeddings)
-
-        return ret
-    
-    def post_training_save(self, samples_to_remove: numpy.array=[]):
-        print('origin', extract_detailed_performances(model, self.sample_to_explain))
+        # print('origin', extract_detailed_performances(model, self.sample_to_explain))
         for param in model.parameters():
-            param.requires_grad = False
+            if param.is_leaf:
+                param.requires_grad = False
+        
+        # frozen_entity_embeddings = model.entity_embeddings.clone().detach()
+        # trainable_head_embedding = torch.nn.Parameter(self.kelpie_init_tensor, requires_grad=True)
+        # frozen_entity_embeddings[self.head] = trainable_head_embedding
+        # print(type(frozen_entity_embeddings))
+        # model.entity_embeddings.requires_grad = True
+        # model.frozen_indices = [i for i in range(model.entity_embeddings.shape[0]) if i != self.head]
+        model.start_post_train(trainable_indices=self.trainable_entities, init_tensor=self.kelpie_init_tensor)
 
-        frozen_entity_embeddings = model.entity_embeddings.clone().detach()
-        trainable_head_embedding = torch.nn.Parameter(self.kelpie_init_tensor, requires_grad=True)
-        frozen_entity_embeddings[self.head] = trainable_head_embedding
-        model.entity_embeddings = torch.nn.Parameter(frozen_entity_embeddings)
+        # print('weight', tensor_head(model.convolutional_layer.weight))
+        # print('embedding', tensor_head(model.entity_embeddings[self.head]))
+        # print('other embedding', tensor_head(model.entity_embeddings[self.head+1]))
 
         # Now you can do your training. Only the entity_embeddings for self.head will get updated...
         optimizer = Optimizer(model=model, hyperparameters=hyperparameters, verbose=False)
         optimizer.epochs = hyperparameters[RETRAIN_EPOCHS]
+        # optimizer.learning_rate *= 10
 
-        original_train_samples = extract_samples_with_entity(dataset.train_samples, self.head)
-        ids = []
-        for sample in samples_to_remove:
-            ids.append(original_train_samples.tolist().index(list(sample)))
-        post_train_samples = np.delete(original_train_samples, ids, axis=0)
-
-        print('original, post_train = ', len(original_train_samples), len(post_train_samples))
-        optimizer.train(train_samples=post_train_samples)
+        # print('original, post_train = ', len(original_train_samples), len(post_train_samples))
+        optimizer.train(train_samples=post_train_samples, post_train=True)
         ret = extract_detailed_performances(model, self.sample_to_explain)
-        print('pt', ret)
+        # print('pt', ret)
 
-        model.load_state_dict(state_dict)
-
+        # print('weight', tensor_head(model.convolutional_layer.weight))
+        # print('embedding', tensor_head(model.entity_embeddings[self.head]))
+        # print('other embedding', tensor_head(model.entity_embeddings[self.head+1]))
+        
         return ret
 
+    
 
-    def post_training_results(self, samples_to_remove: numpy.array=[]):
-        print('origin', extract_detailed_performances(model,self.sample_to_explain))
-        kelpie_model = kelpie_model_class(model=model,
-                                        dataset=self.kelpie_dataset,
-                                        init_tensor=self.kelpie_init_tensor)
-        print('base origin', extract_detailed_performances(kelpie_model,self.sample_to_explain))
-        print('base kelpie', extract_detailed_performances(kelpie_model,self.kelpie_sample_to_predict))
-        if len(samples_to_remove):
-            self.kelpie_dataset.remove_training_samples(samples_to_remove)
-        base_pt_model = self.post_train(kelpie_model_to_post_train=kelpie_model,
-                                        kelpie_train_samples=self.kelpie_dataset.kelpie_train_samples) # type: KelpieModel
-        print('pt origin', extract_detailed_performances(kelpie_model,self.sample_to_explain))
-        print('pt kelpie', extract_detailed_performances(kelpie_model,self.kelpie_sample_to_predict))
-        if len(samples_to_remove):
-            self.kelpie_dataset.undo_last_training_samples_removal()
-        return extract_detailed_performances(base_pt_model, self.kelpie_sample_to_predict)
+from prefilters.prefilter import PreFilter
+import threading
+from multiprocessing.pool import ThreadPool as Pool
+from config import MAX_PROCESSES
+class DividePrefilter(PreFilter):
+    """The DividePrefilter divide all relevance into 2 groups and calculate relevance of both. If one group is valid, continue dividing.
+    Ending criterion: for some layer, the total count of triples is no greater than M. 
+    If the last layer has more than M valid triples, return the top M relevance triple.
 
-    def post_train(self,
-                   kelpie_model_to_post_train: KelpieModel,
-                   kelpie_train_samples: numpy.array):
+    Args:
+        PreFilter (_type_): _description_
+    """
+    def __init__(self,
+                 model: Model,
+                 dataset: Dataset):
         """
-        :param kelpie_model_to_post_train: an UNTRAINED kelpie model that has just been initialized
-        :param kelpie_train_samples:
-        :return:
+        PostTrainingPreFilter object constructor.
+
+        :param model: the model to explain
+        :param dataset: the dataset used to train the model
         """
-        kelpie_model_to_post_train.to('cuda')
-        optimizer = kelpie_optimizer_class(model=kelpie_model_to_post_train,
-                                            hyperparameters=hyperparameters,
-                                            verbose=False)
-        optimizer.epochs = hyperparameters[RETRAIN_EPOCHS]
-        # print(optimizer.epochs)
-        t = time.time()
-        optimizer.train(train_samples=kelpie_train_samples)
-        # print(f'[post_train] kelpie_train_samples: {len(kelpie_train_samples)}, epoches: {optimizer.epochs}, time: {rd(time.time() - t)}')
-        return kelpie_model_to_post_train
+        super().__init__(model, dataset)
+
+        self.max_path_length = 5
+        self.threadLock = threading.Lock()
+        self.counter = 0
+        self.thread_pool = Pool(processes=MAX_PROCESSES)
+
+    def top_promising_explanations(self,
+                                  sample_to_explain:Tuple[Any, Any, Any],
+                                  incomplete_path_entities: List=[],
+                                  top_k=20,) -> list[KelpieExplanation]:
+        
+        all_paths = self.dataset.find_all_path_within_k_hop(sample_to_explain[0], sample_to_explain[-1])
+        all_paths_first_hop = [path[0] for path in all_paths]
+        print('all paths first hop', set(all_paths_first_hop), len(all_paths))
+
+
+        triples = self.dataset.find_all_neighbor_triples(sample_to_explain, incomplete_path_entities)
+        print('latent triples', len(triples), triples)
+
+        if len(triples) <= top_k:
+            print(f'latent triples {len(triples)} <= {top_k}. no need to divide')
+            explanations = []
+            for triple in triples:
+                explanations.append(KelpieExplanation(sample_to_explain, [triple], incomplete_path_entities))
+            
+            explanations.sort(key=lambda x: x.relevance, reverse=True)
+            return explanations
+        
+        print('constructing groups...')
+        # divide triples into 2 groups of the same length randomly
+        groups = [KelpieExplanation(sample_to_explain, triples, incomplete_path_entities)]
+        while sum([len(group) for group in groups]) > top_k:
+            new_groups = []
+            for group in groups:
+                new_groups.extend(self.search_valid_groups(group, sample_to_explain, incomplete_path_entities))
+            groups = new_groups
+
+        # combine all groups
+        explanations = []
+        for group in groups:
+            if len(group.samples_to_remove) == 1:
+                explanations.append(group)
+            else:
+                for sample in group.samples_to_remove:
+                    explanations.append(KelpieExplanation(sample_to_explain, [sample], incomplete_path_entities))
+
+        explanations.sort(lambda x: x.relevance, reverse=True)
+        return explanations
+        
+
+    def search_valid_groups(self, exp: KelpieExplanation):
+        # divide triples into 2 groups of the same length randomly
+        triples = exp.samples_to_remove
+        random.shuffle(triples)
+        group1 = triples[:len(triples)//2]
+        group2 = triples[len(triples)//2:]
+        print('divided into 2 groups')
+        print('group1', len(group1), group1)
+        print('group2', len(group2), group2)
+
+        group1_explanation = KelpieExplanation(exp.sample_to_explain, group1, exp.incomplete_path_entities)
+        group2_explanation = KelpieExplanation(exp.sample_to_explain, group2, exp.incomplete_path_entities)
+
+        valid_groups = []
+        if group1_explanation.is_valid():
+            valid_groups.append(group1_explanation)
+        if group2_explanation.is_valid():
+            valid_groups.append(group2_explanation)
+
+        return valid_groups
+        
+
+class Path:
+    def __init__(self, triples, explanations) -> None:
+        self.triples = triples
+        self.explanations = explanations
+
+
+class Xrule:
+    DEFAULT_MAX_LENGTH = 4
+
+    def __init__(self,
+                 model: Model,
+                 dataset: Dataset,
+                 max_explanation_length: int = DEFAULT_MAX_LENGTH) -> None:
+        
+        self.model = model
+        self.dataset = dataset
+        self.prefilter = DividePrefilter(model, dataset)
+
+    def explain_necessary(self,
+                          sample_to_explain: Tuple[Any, Any, Any]):
+        """This method extracts necessary explanations for a specific sample
+
+        Args:
+            sample_to_explain (Tuple[Any, Any, Any]): _description_
+        """
+        h, r, t = sample_to_explain
+        return self.get_k_hop_path(sample_to_explain)
+    
+    def get_k_hop_path(self, sample_to_explain, incomplete_path_entities=[], last_sample=[], last_exp=[]):
+        """This method extracts necessary paths for a specific sample, k <= hops <= MAX_PATH_LENGTH
+        k = len(incomplete_path_entities) + 1
+        len(incomplete_path_entities)=0 => one_hop_path
+        len(incomplete_path_entities)=1 => two_hop_path
+        len(incomplete_path_entities)=2 => three_hop_path
+
+        Args:
+            sample_to_explain (_type_): _description_
+            incomplete_path_entities (list, optional): _description_. Defaults to [].
+        """
+        k = len(incomplete_path_entities) + 1
+        prefix = '!'*k
+        logger.info(f'{prefix} explanaing {k}-hop path on {sample_to_explain}: {self.dataset.sample_to_fact(sample_to_explain, True)}')
+        logger.info(f'{prefix} incomplete_path_entities: {incomplete_path_entities}, last_sample: {last_sample}')
+
+
+        h, r, t = sample_to_explain
+        trainable_entities = [h] + incomplete_path_entities
+        all_paths = []
+        k_hop_explanations = self.prefilter.top_promising_explanations(sample_to_explain, incomplete_path_entities)
+
+        for k_hop_exp in k_hop_explanations:
+            assert len(k_hop_exp.samples_to_remove) == 1
+            k_hop_sample = k_hop_exp.samples_to_remove[-1]
+            k_hop_target = k_hop_sample[2] if k_hop_sample[0] == trainable_entities[-1] else k_hop_sample[0]
+            if k_hop_target == t:
+                all_paths.append(Path(last_sample + [k_hop_sample], last_exp + [k_hop_exp]))
+                continue
+
+            all_paths.extend(self.get_k_hop_path(k_hop_sample, 
+                                                 incomplete_path_entities + [k_hop_target], 
+                                                 last_sample + [k_hop_sample], 
+                                                 last_exp + [k_hop_exp]))
+            
+        return all_paths
