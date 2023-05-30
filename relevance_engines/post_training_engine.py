@@ -16,7 +16,7 @@ from link_prediction.optimization.multiclass_nll_optimizer import KelpieMultiCla
 from link_prediction.optimization.pairwise_ranking_optimizer import KelpiePairwiseRankingOptimizer
 from link_prediction.models.model import *
 from collections import OrderedDict
-from utils import post_train_times
+from utils import MAX_POST_TRAIN_TIMES
 import numpy as np
 
 class PostTrainingEngine(ExplanationEngine):

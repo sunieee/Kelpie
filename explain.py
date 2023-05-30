@@ -30,6 +30,15 @@ if int(args.run[0]):
     print(f"Train time: {time.time() - t}")
 
 # ---------------------test---------------------
+def ignore_triple(triple):
+    h, r, t = triple
+    if r in ['hasmethod', 'hasoperation']:
+        return True
+    if t in ['p1962']:
+        return True
+    return False
+
+
 model.eval()
 if int(args.run[1]):
     ech("Evaluating model...")
@@ -38,19 +47,19 @@ if int(args.run[1]):
     ech("making facts to explain...")
     lis = []
     print("{:^15}\t{:^15}\t{:^15}\t{:^15}".format('relation', '#targets', '#triples', '#top_triples'))
-    for d in os.listdir(args.output_folder):
-        if os.path.isdir(os.path.join(args.output_folder, d)) and d in ['haslinker', 'hasmetal', 'hassolvent']:
-            df = pd.read_csv(os.path.join(args.output_folder, d, 'filtered_ranks.csv'), sep=';', header=None)
-            df.columns = ['h', 'r', 't', 'hr', 'tr']
-            size = len(dataset.rid2target[dataset.relation_name_2_id[d]])
-            
-            top_count = 0
-            for i in range(len(df)):
-                # if df.loc[i, 'tr'] <= math.ceil(size*0.05):
-                if df.loc[i, 'tr'] == 1:
-                    top_count += 1
-                    lis.append('\t'.join([df.loc[i, 'h'], df.loc[i, 'r'], df.loc[i, 't']]))
-            print("{:^15}\t{:^15}\t{:^15}\t{:^15}".format(d, size, len(df), top_count))
+    df = pd.read_csv(os.path.join(args.output_folder, 'filtered_ranks.csv'), sep=';', header=None)
+    df.columns = ['h', 'r', 't', 'hr', 'tr']
+
+    for d in set(df['r']):
+        rel_df = df[df['r'] == d]
+        size = len(dataset.rid2target[dataset.relation_name_2_id[d]])
+        top_count = 0
+        for i in range(len(df)):
+            # if df.loc[i, 'tr'] <= math.ceil(size*0.05):
+            if df.loc[i, 'tr'] <= 5 and not ignore_triple(df.loc[i, ['h', 'r', 't']]):
+                top_count += 1
+                lis.append('\t'.join([df.loc[i, 'h'], df.loc[i, 'r'], df.loc[i, 't']]))
+        print("{:^15}\t{:^15}\t{:^15}\t{:^15}".format(d, size, len(df), top_count))
 
     with open(args.explain_path, 'w') as f:
         f.write('\n'.join(lis))
@@ -177,16 +186,18 @@ def print_facts(rule_samples_with_relevance, sample_to_explain):
         #         retrain_without_samples(remove_triples=cur_rule_samples, sample_to_explain=sample_to_explain)
 
 for i, fact in enumerate(testing_facts):
+    if ignore_triple(fact):
+        continue
     head, relation, tail = fact
-    print("Explaining fact " + str(i) + " on " + str(
-        len(testing_facts)) + ": " + triple2str(fact))
+    ech(f"Explaining fact {i} on {len(testing_facts)}: + {triple2str(fact)}")
+    logger.info(f"Explaining fact {i} on {len(testing_facts)}: + {triple2str(fact)}")
     head_id, relation_id, tail_id = dataset.get_id_for_entity_name(head), \
                                     dataset.get_id_for_relation_name(relation), \
                                     dataset.get_id_for_entity_name(tail)
     sample_to_explain = (head_id, relation_id, tail_id)
     score, best, rank = extract_detailed_performances(model, sample_to_explain)
     if rank > 10:
-        ech(f'{dataset.sample_to_fact(sample_to_explain, True)} is not a valid prediction. Skip')
+        logger.info(f'{dataset.sample_to_fact(sample_to_explain, True)} is not a valid prediction (rank={rank}, score={score}). Skip')
         continue
     
     ech(f'input of fact {dataset.sample_to_fact(sample_to_explain, True)} {rank}')

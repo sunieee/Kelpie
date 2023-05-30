@@ -1,7 +1,7 @@
 import html
 import os
 from collections import defaultdict
-from typing import Tuple
+from typing import Tuple, Set
 
 import numpy
 
@@ -237,6 +237,7 @@ class Dataset:
 
 
     def make_dic(self):
+        self.entity_id_2_neighbors = defaultdict(list)
         self.entity_id_2_train_samples = defaultdict(list)
         self.entity_id_2_relation_vector = defaultdict(lambda: np.zeros(2*self.num_relations))
 
@@ -245,6 +246,8 @@ class Dataset:
             self.entity_id_2_train_samples[t].append((h, r, t))
             self.entity_id_2_relation_vector[h][r] += 1
             self.entity_id_2_relation_vector[t][r+self.num_relations] += 1
+            self.entity_id_2_neighbors[h].append(t)
+            self.entity_id_2_neighbors[t].append(h)
 
 
     def _read_triples(self, triples_path: str, separator="\t"):
@@ -488,14 +491,22 @@ class Dataset:
         return" + ".join([self.printable_sample(sample) for sample in nple])
     
     @staticmethod
-    def entity_in_path(entity, path):
+    def has_entity_in_path(entity, path):
         for sample in path:
             if entity in [sample[0], sample[2]]:
                 return True
         return False
     
-    def find_all_path_within_k_hop(self, h, t, k=MAX_PATH_LENGTH):
-        """find all path between head and tail within k-hop
+    @staticmethod
+    def has_entities_in_path(entities, path):
+        for entity in entities:
+            if Dataset.has_entity_in_path(entity, path):
+                return True
+        return False
+    
+    def find_all_path_within_k_hop(self, h, t, k=MAX_PATH_LENGTH, forbidden_entities=[]):
+        """find all path between head and tail within k-hop.
+        Filter out paths that contain entities in forbidden_entities.
 
         Args:
             h (_type_): _description_
@@ -508,12 +519,12 @@ class Dataset:
         paths = []
         for sample in self.entity_id_2_train_samples[h]:
             target = sample[-1] if sample[0] == h else sample[0]
-            if target == t:
+            if target == t and target not in forbidden_entities + [h]:
                 paths.append([sample])
             
-            new_paths = self.find_all_path_within_k_hop(target, t, k-1)
+            new_paths = self.find_all_path_within_k_hop(target, t, k-1, forbidden_entities=forbidden_entities + [h])
             for new_path in new_paths:
-                if not self.entity_in_path(h, new_path):
+                if not self.has_entities_in_path(forbidden_entities + [h], new_path):
                     paths.append([sample] + new_path)
         return paths
 
