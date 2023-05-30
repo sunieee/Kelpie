@@ -505,7 +505,7 @@ class Dataset:
         return False
     
     def find_all_path_within_k_hop(self, h, t, k=MAX_PATH_LENGTH, forbidden_entities=[]):
-        """find all path between head and tail within k-hop.
+        """find all path between h and t within k-hop.
         Filter out paths that contain entities in forbidden_entities.
 
         Args:
@@ -519,12 +519,12 @@ class Dataset:
         paths = []
         for sample in self.entity_id_2_train_samples[h]:
             target = sample[-1] if sample[0] == h else sample[0]
-            if target == t and target not in forbidden_entities + [h]:
+            if target == t and target not in forbidden_entities:
                 paths.append([sample])
             
-            new_paths = self.find_all_path_within_k_hop(target, t, k-1, forbidden_entities=forbidden_entities + [h])
+            new_paths = self.find_all_path_within_k_hop(target, t, k-1, forbidden_entities=forbidden_entities + [target])
             for new_path in new_paths:
-                if not self.has_entities_in_path(forbidden_entities + [h], new_path):
+                if not self.has_entities_in_path(forbidden_entities, new_path):
                     paths.append([sample] + new_path)
         return paths
 

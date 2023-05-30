@@ -9,7 +9,7 @@ import numpy
 import os
 from collections import defaultdict
 import numpy as np
-from utils import KelpieExplanation
+from utils import Explanation
 
 DEAFAULT_XSI_THRESHOLD = 5
 
@@ -120,7 +120,7 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
 
         # this is an exception: all samples (= rules with length 1) are tested
         for i, sample_to_remove in enumerate(samples_to_remove):
-            relevance = KelpieExplanation(self.sample_to_explain, [sample_to_remove]).relevance
+            relevance = Explanation(self.sample_to_explain, [sample_to_remove]).relevance
             # self._compute_relevance_for_rule(([sample_to_remove]))
             if relevance < 1:
                 continue
@@ -153,7 +153,7 @@ class StochasticNecessaryExplanationBuilder(NecessaryExplanationBuilder):
 
             current_rule, current_preliminary_score = all_possible_rules_with_preliminary_scores[i]
 
-            current_rule_relevance = KelpieExplanation(self.sample_to_explain, current_rule).relevance
+            current_rule_relevance = Explanation(self.sample_to_explain, current_rule).relevance
             # self._compute_relevance_for_rule(current_rule)
             if current_rule_relevance < 1:
                 continue

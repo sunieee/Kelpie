@@ -1,8 +1,8 @@
 
 
-dataset=MOF-3000
-# dataset=FB15k-237
-device=1
+# dataset=MOF-3000
+dataset=FB15k-237
+device=0
 # method=ConvE          TransE
 # embedding_model=CompGCN       ""
 
