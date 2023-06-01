@@ -198,14 +198,16 @@ class ConvE(Model):
         self.trainable_indices = trainable_indices
         self.frozen_indices = list(set(range(self.entity_embeddings.shape[0])) - set(trainable_indices))
         if init_tensor is None:
-            init_tensor = torch.rand_like(self.entity_embeddings[self.trainable_indices]) - 0.5
+            # init_tensor = torch.rand_like(self.entity_embeddings[self.trainable_indices]) - 0.5
+            init_tensor = self.entity_embeddings[self.trainable_indices]
 
         # THIS IS IMPORTANT: the init_tensor should be cloned, not directly assigned to init_embeddings.
         # Otherwise, the gradients will be propagated to kelpie_init_tensor!!! The result will be better and better
 
         # init_embeddings = self.entity_embeddings[self.trainable_indices] + init_tensor.clone()
         init_embeddings = init_tensor.clone()
-        self.trainable_entity_embeddings = nn.Parameter(init_embeddings)
+        self.trainable_entity_embeddings = nn.Parameter(init_embeddings, requires_grad=True)
+        # self.update_embeddings()
 
     def end_post_train(self):
         # end post-training

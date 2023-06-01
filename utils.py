@@ -253,11 +253,15 @@ else:
 torch.save(model.state_dict(), f'{args.output_folder}/params.pth')
 args.state_dict = torch.load(f'{args.output_folder}/params.pth')
 
-MAX_POST_TRAIN_TIMES = 5
+# MAX_POST_TRAIN_TIMES = 5
+MAX_POST_TRAIN_TIMES = 2
 MAX_TRAINING_THRESH = 300
 MAX_COMBINATION_SIZE = 4
 DEFAULT_XSI_THRESHOLD = 0.2
 DEFAULT_VALID_THRESHOLD = 0.02
+MAKE_COMBINATION = False
+state_dict_path = f'{args.output_folder}/state_dict'    # saving state_dict for each base identifier
+os.makedirs(state_dict_path, exist_ok=True)
 
 
 if isinstance(model, ComplEx):
@@ -275,7 +279,7 @@ def sigmoid(x):
     return 1 / (1 + math.exp(-x))
 
 def rd(x):
-    return round(x, 4)
+    return np.round(x, 4)
 
 def mean(lis):
     return rd(np.mean(lis))
@@ -323,7 +327,7 @@ def extract_detailed_performances(model: Model, sample: numpy.array):
         best_entity_score = numpy.max(all_scores)
         target_entity_rank = numpy.sum(all_scores >= target_entity_score)  # we use min policy here
 
-    return target_entity_score, best_entity_score, target_entity_rank
+    return rd(target_entity_score), rd(best_entity_score), target_entity_rank
 
 def extract_samples_with_entity(samples, entity_id):
     return samples[numpy.where(numpy.logical_or(samples[:, 0] == entity_id, samples[:, 2] == entity_id))]
@@ -337,6 +341,8 @@ def extract_training_samples_length(trainable_entities) -> np.array:
     return len(original_train_samples)
 
 identifier2explanations = defaultdict(list)
+base_identifier2next_triples = defaultdict(set)
+base_identifier2trainable_entities_embedding = {}
 
 class Explanation:
     _original_model_results = {}  # map original samples to scores and ranks from the original model
@@ -355,7 +361,7 @@ class Explanation:
         :param samples_to_remove:   the list of samples containing the perspective entity
                                     that we want to analyze the effect of, if added to the perspective entity
     """
-    df = pd.DataFrame(columns=['sample_to_explain', 'identifier', 'samples_to_remove', 'incomplete_path_entities', 'length', 'base_score', 'base_best', 'base_rank', 'pt_score', 'pt_best', 'pt_rank', 'rank_worsening', 'score_worsening', 'relevance'])
+    df = pd.DataFrame(columns=['sample_to_explain', 'identifier', 'samples_to_remove', 'length', 'base_score', 'base_best', 'base_rank', 'pt_score', 'pt_best', 'pt_rank', 'rank_worsening', 'score_worsening', 'relevance'])
     
     def _get_kelpie_init_tensor(self):
         embeddings = []
@@ -375,21 +381,85 @@ class Explanation:
         self.ids = []
         for sample in self.samples_to_remove:
             self.ids.append(self.original_train_samples.tolist().index(list(sample)))
-        self.training_samples = np.delete(self.original_train_samples, self.ids, axis=0)
+        self.pt_train_samples = np.delete(self.original_train_samples, self.ids, axis=0)
+        self.base_train_samples = self.original_train_samples
 
-        self.empty_samples = np.delete(self.original_train_samples, list(range(len(self.original_train_samples))), axis=0)
+        # self.empty_samples = np.delete(self.original_train_samples, list(range(len(self.original_train_samples))), axis=0)
+
+    
+    def _extract_training_samples_sharing_others(self) -> np.array:
+        """extract training samples from the dataset for the trainable entities
+
+        Returns:
+            np.array: _description_
+        """
+        path_samples = set()
+        original_train_samples = set()
+        for entity in self.trainable_entities:
+            for sample in dataset.entity_id_2_train_samples[entity]:
+                original_train_samples.add(sample)
+
+                target = sample[2] if sample[0] == entity else sample[0]
+                if target in self.trainable_entities:
+                    path_samples.add(sample)
+
+        self.ids = []
+        original_train_samples_list = list(original_train_samples)
+        original_train_samples_list.sort()
+        for sample in self.samples_to_remove:
+            self.ids.append(original_train_samples_list.index(sample))
+
+        if self.base_identifier in base_identifier2next_triples:
+            next_triples_cnt = len(base_identifier2next_triples[self.base_identifier])
+            base_train_samples = path_samples | base_identifier2next_triples[self.base_identifier] | set(self.samples_to_remove)
+        else:
+            next_triples_cnt = np.inf
+            base_train_samples = original_train_samples
+        
+        pt_train_samples = base_train_samples - set(self.samples_to_remove)
+        share_train_samples = original_train_samples - base_train_samples
+
+        logger.info(f'base_identifier: {self.base_identifier} path: {len(path_samples)} next: {next_triples_cnt} original: {len(original_train_samples)} base: {len(base_train_samples)} pt: {len(pt_train_samples)} share: {len(share_train_samples)}')
+
+        # stack a list of training samples, each of them is a tuple
+        self.original_train_samples = np.stack(list(original_train_samples), axis=0)
+        self.base_train_samples = np.stack(list(base_train_samples), axis=0)
+        if len(pt_train_samples) == 0:
+            self.pt_train_samples = []
+        else:
+            self.pt_train_samples = np.stack(list(pt_train_samples), axis=0)
+
+        if len(share_train_samples) == 0:
+            self.sharing = False
+            return
+
+        if self.base_identifier not in base_identifier2trainable_entities_embedding:    
+            logger.info(f'[post-training on share] {len(share_train_samples)}/{len(self.original_train_samples)} samples, {hyperparameters[RETRAIN_EPOCHS]} epoches')
+            target_entity_score, \
+            best_entity_score, \
+            target_entity_rank = self.post_training_save(np.stack(list(share_train_samples), axis=0), save=True)
+            logger.info(f'[post-training on share] target_entity_score: {target_entity_score}, best_entity_score: {best_entity_score}, target_entity_rank: {target_entity_rank}')
+            
+
+        # self.original_train_samples = np.stack(list(original_train_samples), axis=0)
+        # self.ids = []
+        # for sample in self.samples_to_remove:
+        #     self.ids.append(self.original_train_samples.tolist().index(list(sample)))
+        # self.pt_training_samples = np.delete(self.original_train_samples, self.ids, axis=0)
+
+        # self.empty_samples = np.delete(self.original_train_samples, list(range(len(self.original_train_samples))), axis=0)
 
     @staticmethod
     def build(sample_to_explain: Tuple[Any, Any, Any],
                  samples_to_remove: List[Tuple],
-                 trainable_entities: List=None):
-        explanation = Explanation(sample_to_explain, samples_to_remove, trainable_entities)
+                 trainable_entities: List=None, sharing: bool=True):
+        explanation = Explanation(sample_to_explain, samples_to_remove, trainable_entities, sharing)
         if explanation.identifier in identifier2explanations:
             return identifier2explanations[explanation.identifier]
 
         explanation.calculate_relevance()
 
-        if len(explanation.ids) <= MAX_COMBINATION_SIZE: 
+        if len(explanation.samples_to_remove) <= MAX_COMBINATION_SIZE: 
             identifier2explanations[explanation.identifier] = explanation
 
         Explanation.df.loc[len(Explanation.df)] = explanation.ret
@@ -400,9 +470,9 @@ class Explanation:
     def __init__(self, 
                  sample_to_explain: Tuple[Any, Any, Any],
                  samples_to_remove: List[Tuple],
-                 trainable_entities: List=None) -> None:
-        logger.info("Create Explanation on sample: %s", dataset.sample_to_fact(sample_to_explain, True))
-        logger.info("Removing sample: %s", [dataset.sample_to_fact(x, True) for x in samples_to_remove])
+                 trainable_entities: List=None, sharing: bool=True) -> None:
+        logger.info("Create Explanation on sample: %s, removing: %s", sample_to_explain, samples_to_remove)
+        # logger.info("Removing sample: %s", [dataset.sample_to_fact(x, True) for x in samples_to_remove])
         # for entity_id, samples in samples_to_remove.items():
         #     print("Entity:", dataset.entity_id_to_name(entity_id), "Samples:", [dataset.sample_to_fact(x, True) for x in samples])
 
@@ -412,21 +482,31 @@ class Explanation:
             trainable_entities = [sample_to_explain[0]]
 
         self.head = sample_to_explain[0]
-        trainable_entities.sort()   # sort the trainable entities to make sure the identifier is unique
+        # trainable_entities.sort()   # WE SHOULD NOT SORT HERE, BECAUSE THE ORDER OF TRAINABLE ENTITIES MATTERS
         self.trainable_entities = trainable_entities
         self.kelpie_init_tensor = self._get_kelpie_init_tensor()
-        self._extract_training_samples()
-        self.identifier = (tuple(self.sample_to_explain), tuple(self.trainable_entities), tuple(self.ids))
-        self.base_identifier = self.identifier[:2]
+        self.base_identifier = (tuple(self.sample_to_explain), tuple(self.trainable_entities))
+
+        samples_to_remove.sort()
+        self.remove_hash = sum([hash(x) for x in samples_to_remove])
+        self.identifier = (tuple(self.sample_to_explain), tuple(self.trainable_entities), self.remove_hash)
+        
+        logger.info('extracting training samples...')
+        self.sharing = sharing
+        if sharing:
+            self._extract_training_samples_sharing_others()
+        else:
+            self._extract_training_samples()
+        # self.identifier = (tuple(self.sample_to_explain), tuple(self.trainable_entities), tuple(self.ids))
         self.paths = []    # only path (simple/compound) explanation has path
         
 
     def calculate_relevance(self):
-        if self.training_samples.shape[0] > MAX_TRAINING_THRESH:
-            print(f'cost of computing on {self.trainable_entities} is too large. Avoiding...')
-            self.relevance = 0
-            self.ret = {}
-            return
+        # if self.pt_training_samples.shape[0] > MAX_TRAINING_THRESH:
+        #     print(f'cost of computing on {self.trainable_entities} is too large. Avoiding...')
+        #     self.relevance = 0
+        #     self.ret = {}
+        #     return
 
         # print('[Explanation]origin score', self.original_results())
 
@@ -436,11 +516,11 @@ class Explanation:
         
         base_pt_target_entity_score, \
         base_pt_best_entity_score, \
-        base_pt_target_entity_rank = self.base_post_training_multiple()
+        base_pt_target_entity_rank = self.base_training_multiple()
 
         pt_target_entity_score, \
         pt_best_entity_score, \
-        pt_target_entity_rank = self.post_training_multiple(self.training_samples, True)
+        pt_target_entity_rank = self.pt_training_multiple()
 
         rank_worsening = (pt_target_entity_rank - base_pt_target_entity_rank) / base_pt_target_entity_rank
         score_worsening = (base_pt_target_entity_score - pt_target_entity_score) / base_pt_target_entity_score
@@ -452,7 +532,7 @@ class Explanation:
         self.relevance = get_removel_relevance(rank_worsening, score_worsening)
         self.ret = {'sample_to_explain': dataset.sample_to_fact(self.sample_to_explain, True),
                 'identifier': self.identifier,
-                'samples_to_remove': self.samples_to_remove,
+                # 'samples_to_remove': self.samples_to_remove,
                 'length': len(self.samples_to_remove),
                 'base_score': base_pt_target_entity_score,
                 'base_best': base_pt_best_entity_score,
@@ -465,20 +545,24 @@ class Explanation:
                 'relevance': self.relevance}
 
 
-    def base_post_training_multiple(self):
+    def base_training_multiple(self):
         if self.base_identifier in self._base_pt_model_results:
             return self._base_pt_model_results[self.base_identifier]
 
-        self._base_pt_model_results[self.base_identifier] = self.post_training_multiple(self.original_train_samples)
+        logger.info(f'[base_training_multiple] {len(self.base_train_samples)}/{len(self.original_train_samples)} samples, {hyperparameters[RETRAIN_EPOCHS]} epoches')
+        self._base_pt_model_results[self.base_identifier] = self.post_training_multiple(self.base_train_samples)
         return self._base_pt_model_results[self.base_identifier]
+
+    def pt_training_multiple(self):
+        logger.info(f'[pt_training_multiple] {len(self.pt_train_samples)}/{len(self.original_train_samples)} samples, {hyperparameters[RETRAIN_EPOCHS]} epoches')
+        return self.post_training_multiple(self.pt_train_samples, early_stop=True)
 
     def is_valid(self):
         return self.relevance >= DEFAULT_VALID_THRESHOLD
 
     def post_training_multiple(self, training_samples, early_stop=False):
         results = []
-        logger.info(f'[post_training_multiple] {len(training_samples)}/{len(self.original_train_samples)} samples, {hyperparameters[RETRAIN_EPOCHS]} epoches')
-        for i in tqdm(range(MAX_POST_TRAIN_TIMES)):
+        for i in range(MAX_POST_TRAIN_TIMES):
             results.append(self.post_training_save(training_samples))
             if len(results) > 1 and early_stop:
                 # if the CV of the score and rank is small enough, stop training
@@ -507,10 +591,20 @@ class Explanation:
         return self._original_model_results[sample]
 
     
-    def post_training_save(self, post_train_samples: numpy.array=[]):
+    def post_training_save(self, post_train_samples: numpy.array=[], save: bool=False):
         new_model = TargetModel(dataset=dataset, hyperparameters=hyperparameters)
+        new_model.load_state_dict(state_dict=args.state_dict)
         new_model = new_model.to('cuda')
-        new_model.load_state_dict(state_dict=args.state_dict)        
+
+        if self.sharing and not save:
+            init_tensor = base_identifier2trainable_entities_embedding[self.base_identifier]
+            # IMPORTANT: initialize trainable_entities_embedding
+        else:
+            init_tensor = self.kelpie_init_tensor
+        
+        # if len(post_train_samples) == 0:
+        #     return extract_detailed_performances(new_model, self.sample_to_explain)
+
         for param in new_model.parameters():
             if param.is_leaf:
                 param.requires_grad = False
@@ -521,27 +615,33 @@ class Explanation:
         # print(type(frozen_entity_embeddings))
         # model.entity_embeddings.requires_grad = True
         # model.frozen_indices = [i for i in range(model.entity_embeddings.shape[0]) if i != self.head]
-        new_model.start_post_train(trainable_indices=self.trainable_entities, init_tensor=self.kelpie_init_tensor)
+
+        new_model.start_post_train(trainable_indices=self.trainable_entities, init_tensor=init_tensor)   
 
         # print('origin', extract_detailed_performances(new_model, self.sample_to_explain))
-        # print('weight', tensor_head(model.convolutional_layer.weight))
-        # print('embedding', tensor_head(model.entity_embeddings[self.head]))
-        # print('other embedding', tensor_head(model.entity_embeddings[self.head+1]))
+        # print('weight', tensor_head(new_model.convolutional_layer.weight))
+        logger.info('before embedding %s', tensor_head(new_model.trainable_entity_embeddings[0]))
+        # print('other embedding', tensor_head(new_model.entity_embeddings[self.head+1]))
 
-        # Now you can do your training. Only the entity_embeddings for self.head will get updated...
-        optimizer = Optimizer(model=new_model, hyperparameters=hyperparameters, verbose=False)
-        optimizer.epochs = hyperparameters[RETRAIN_EPOCHS]
-        # optimizer.learning_rate *= 10
+        if len(post_train_samples):
+            # Now you can do your training. Only the entity_embeddings for self.head will get updated...
+            optimizer = Optimizer(model=new_model, hyperparameters=hyperparameters, verbose=False)
+            optimizer.epochs = hyperparameters[RETRAIN_EPOCHS]
+            # optimizer.learning_rate *= 10
 
-        # print('original, post_train = ', len(original_train_samples), len(post_train_samples))
-        optimizer.train(train_samples=post_train_samples, post_train=True)
+            # print('original, post_train = ', len(original_train_samples), len(post_train_samples))
+            optimizer.train(train_samples=post_train_samples, post_train=True)
+        
         ret = extract_detailed_performances(new_model, self.sample_to_explain)
         # print('pt', ret)
 
-        # print('weight', tensor_head(model.convolutional_layer.weight))
-        # print('embedding', tensor_head(model.entity_embeddings[self.head]))
-        # print('other embedding', tensor_head(model.entity_embeddings[self.head+1]))
+        # print('weight', tensor_head(new_model.convolutional_layer.weight))
+        logger.info('after embedding %s', tensor_head(new_model.trainable_entity_embeddings[0]))
+        # print('other embedding', tensor_head(new_model.entity_embeddings[self.head+1]))
         
+        if save:
+            base_identifier2trainable_entities_embedding[self.base_identifier] = new_model.trainable_entity_embeddings.clone().detach()
+
         return ret
 
     
@@ -559,7 +659,7 @@ class DividePrefilter(PreFilter):
     Args:
         PreFilter (_type_): _description_
     """
-    df = pd.DataFrame(columns=['sample_to_explain', 'identifier', 'incomplete_path_entities', 'length', 'r1', 'r2', 'relevance'])
+    df = pd.DataFrame(columns=['sample_to_explain', 'identifier', 'length', 'r1', 'r2', 'relevance'])
     def __init__(self,
                  model: Model,
                  dataset: Dataset):
@@ -577,7 +677,7 @@ class DividePrefilter(PreFilter):
         self.thread_pool = Pool(processes=MAX_PROCESSES)
 
     def top_promising_explanations(self,
-                                  sample_to_explain:Tuple[Any, Any, Any],
+                                  prediction:Tuple[Any, Any, Any],
                                   incomplete_path_entities: List=None,
                                   top_N=20,) -> list[Explanation]:
         """return top N k-hop simple explanations 
@@ -592,41 +692,36 @@ class DividePrefilter(PreFilter):
             list[Explanation]: _description_
         """
         
-        h, r, t = sample_to_explain
+        h, r, t = prediction
         if incomplete_path_entities is None:
             incomplete_path_entities = [h]
-        if extract_training_samples_length(incomplete_path_entities) > MAX_TRAINING_THRESH:
-            # TODO: how to calculate the training set too large efficiently?
-            logger.info(f'cost of computing on {incomplete_path_entities} is too large. Avoiding...')
-            return []
+        # if extract_training_samples_length(incomplete_path_entities) > MAX_TRAINING_THRESH:
+        #     # TODO: how to calculate the training set too large efficiently?
+        #     logger.info(f'cost of computing on {incomplete_path_entities} is too large. Avoiding...')
+        #     return []
         
-        all_paths = self.dataset.find_all_path_within_k_hop(incomplete_path_entities[-1], t,
-                                                            k=MAX_PATH_LENGTH-len(incomplete_path_entities),
-                                                            forbidden_entities=incomplete_path_entities)
-        triples = list(set([path[0] for path in all_paths]))
-        logger.info(f'latent triples({len(triples)}) in path({len(all_paths)}): {triples}')
-        
+        next_hop_triples = base_identifier2next_triples[(tuple(prediction), tuple(incomplete_path_entities))]
         explanations = []  
-        if len(incomplete_path_entities) == 1:
-            # first add all 1-hop/2-hop triples. We do not need explanation to be valid here
-            triples_hop3 = []
-            for triple in triples:
-                target = triple[2] if triple[0] == h else triple[0]
-                if target == t or target in dataset.entity_id_2_neighbors[t]:
-                    exp = Explanation.build(sample_to_explain, [triple], incomplete_path_entities)
-                    if exp.is_valid():
-                        explanations.append(exp)
-                else:
-                    triples_hop3.append(triple)
-            triples = triples_hop3
-            logger.info(f'hop1-2 triples ({len(explanations)}) {[exp.relevance for exp in explanations]}')
-            logger.info(f'hop3 triples ({len(triples)})')
+        # if len(incomplete_path_entities) == 1:
+        #     # first add all 1-hop/2-hop triples. We do not need explanation to be valid here
+        #     triples_hop3 = []
+        #     for triple in next_hop_triples:
+        #         target = triple[2] if triple[0] == h else triple[0]
+        #         if target == t or target in dataset.entity_id_2_neighbors[t]:
+        #             exp = Explanation.build(prediction, [triple], incomplete_path_entities)
+        #             if exp.is_valid():
+        #                 explanations.append(exp)
+        #         else:
+        #             triples_hop3.append(triple)
+        #     next_hop_triples = triples_hop3
+        #     logger.info(f'hop1-2 triples ({len(explanations)}) {[exp.relevance for exp in explanations]}')
+        #     logger.info(f'hop3 triples ({len(next_hop_triples)})')
 
         # if the number of triples is less than top_k, no need to divide
-        if len(triples) <= top_N:
-            logger.info(f'latent triples {len(triples)} <= {top_N}. no need to divide')
-            for triple in triples:
-                exp = Explanation.build(sample_to_explain, [triple], incomplete_path_entities)
+        if len(next_hop_triples) <= top_N:
+            logger.info(f'latent triples {len(next_hop_triples)} <= {top_N}. no need to divide')
+            for triple in next_hop_triples:
+                exp = Explanation.build(prediction, [triple], incomplete_path_entities)
                 if exp.is_valid():
                     explanations.append(exp)
             
@@ -634,7 +729,7 @@ class DividePrefilter(PreFilter):
             return explanations[:top_N]
 
         # construct overall explanation
-        overall_explanation = Explanation.build(sample_to_explain, triples, incomplete_path_entities)
+        overall_explanation = Explanation.build(prediction, list(next_hop_triples), incomplete_path_entities)
         if not overall_explanation.is_valid():
             logger.info('overall explanation is not valid. No valid explanations for current sample')
             return []
@@ -659,7 +754,7 @@ class DividePrefilter(PreFilter):
                 explanations.append(group)
             else:
                 for sample in group.samples_to_remove:
-                    exp = Explanation.build(sample_to_explain, [sample], incomplete_path_entities)
+                    exp = Explanation.build(prediction, [sample], incomplete_path_entities)
                     if exp.is_valid():
                         explanations.append(exp)
 
@@ -677,8 +772,8 @@ class DividePrefilter(PreFilter):
         print('group1', len(group1), group1)
         print('group2', len(group2), group2)
 
-        group1_explanation = Explanation.build(exp.sample_to_explain, group1, exp.incomplete_path_entities)
-        group2_explanation = Explanation.build(exp.sample_to_explain, group2, exp.incomplete_path_entities)
+        group1_explanation = Explanation.build(exp.sample_to_explain, group1, exp.trainable_entities)
+        group2_explanation = Explanation.build(exp.sample_to_explain, group2, exp.trainable_entities)
 
         valid_groups = []
         if group1_explanation.is_valid():
@@ -689,7 +784,6 @@ class DividePrefilter(PreFilter):
         self.df.loc[len(self.df)] = {
             'sample_to_explain': exp.sample_to_explain,
             'identifier': exp.identifier,
-            'incomplete_path_entities': exp.incomplete_path_entities,
             'length': len(exp.samples_to_remove),
             'r1': group1_explanation.relevance,
             'r2': group2_explanation.relevance,
@@ -719,22 +813,65 @@ class NumpyEncoder(json.JSONEncoder):
 
 class Path:
     paths = []
+    rel_df = pd.DataFrame(columns=['prediction', 'relevance', 'triples', 'all_rel'])
+
+    @staticmethod
+    def build(sample_to_explain, triples):
+        """build a path on scratch
+
+        Args:
+            triples (_type_): _description_
+        """
+        head, rel, tail = sample_to_explain
+        last_entity = sample_to_explain[0]
+        path_entities = [last_entity]
+        for triple in triples:
+            target = triple[2] if triple[0] == last_entity else triple[0]
+            path_entities.append(target)
+            last_entity = target
+
+        explanations = []
+        for ix, entitiy in enumerate(path_entities[:-1]):
+            incomplete_path_entities = path_entities[:ix+1]
+            all_paths = dataset.find_all_path_within_k_hop(entitiy, tail, k=MAX_PATH_LENGTH - len(incomplete_path_entities) + 1, \
+                                                           forbidden_entities=incomplete_path_entities)
+            
+            next_triples = set([tuple(path[0]) for path in all_paths])
+            logger.info(f'latent triples({len(next_triples)}) in path({len(all_paths)}): {next_triples}')
+            base_identifier2next_triples[(tuple(sample_to_explain), tuple(incomplete_path_entities))] = next_triples
+
+            explanations.append(Explanation.build(sample_to_explain, [triples[ix]], incomplete_path_entities))
+
+        return Path(triples, explanations)
+
 
     def __init__(self, triples, explanations) -> None:
+        logger.info(f'constructing path with triples {str(triples)}')
         self.triples = triples
         self.sample_to_explain = explanations[0].sample_to_explain
         self.explanations = explanations
         self.triple2explanation = {triple: explanation for triple, explanation in zip(triples, explanations)}
         
-        self.path_explanation = Explanation.build(self.sample_to_explain, triples, explanations[-1].trainable_entities)
+        self.path_explanation = Explanation.build(self.sample_to_explain, triples, explanations[-1].trainable_entities, sharing=True)
         self.relevance = self.path_explanation.relevance
 
         self.path_explanation.paths.append(self)
 
-        logger.info(f'constructing path with triples {str(triples)}: {self.relevance}')
+        logger.info(f'path relevance: {[exp.relevance for exp in self.explanations]} {self.relevance}')
         Path.paths.append(self)
-        Path.save_to_local()
+        lis = [path.json() for path in Path.paths]
+        with open(f'{args.output_folder}/paths.json', 'w') as f:
+            json.dump(lis, f, cls=NumpyEncoder, indent=4)
+
+        Path.rel_df.loc[len(Path.rel_df)] = {
+            'prediction': self.sample_to_explain,
+            'relevance': self.relevance,
+            'triples': self.triples,
+            'all_rel': [exp.relevance for exp in self.explanations]
+        }
+        Path.rel_df.to_csv(f'{args.output_folder}/rel_df.csv')
     
+
     def json(self):
         return {
             'sample_to_explain': self.explanations[0].ret['sample_to_explain'],
@@ -744,12 +881,7 @@ class Path:
             'path_explanation': self.path_explanation.ret,
             'relevance': self.relevance
         }
-
-    @staticmethod
-    def save_to_local():
-        lis = [path.json() for path in Path.paths]
-        with open(f'{args.output_folder}/paths.json', 'w') as f:
-            json.dump(lis, f, cls=NumpyEncoder, indent=4)
+        
 
 class Xrule:
     def __init__(self,
@@ -789,6 +921,15 @@ class Xrule:
         logger.info(f'{prefix} explanaing {k}-hop path on {prediction}: {self.dataset.sample_to_fact(prediction, True)}')
         logger.info(f'{prefix} incomplete_path_entities: {incomplete_path_entities}, last_sample: {last_sample}')
         
+        remain_length = MAX_PATH_LENGTH - k + 1
+        all_paths = self.dataset.find_all_path_within_k_hop(incomplete_path_entities[-1], t,
+                                                            k=remain_length,
+                                                            forbidden_entities=incomplete_path_entities)
+        triples = set([tuple(path[0]) for path in all_paths])
+        logger.info(f'latent triples({len(triples)}) in path({len(all_paths)}): {triples}')
+        base_identifier2next_triples[(tuple(prediction), tuple(incomplete_path_entities))] = triples
+        # logger.info(f'base_identifier2next_triples: {(tuple(prediction), tuple(incomplete_path_entities))} = {base_identifier2next_triples}')
+
         k_hop_explanations = self.prefilter.top_promising_explanations(prediction, incomplete_path_entities)
 
         all_paths = []
@@ -805,7 +946,7 @@ class Xrule:
                                                  last_sample + [k_hop_sample], 
                                                  last_exp + [k_hop_exp]))
             
-        if k == 1:
+        if k == 1 and MAKE_COMBINATION:
             one_hop_combinations = Combination(k_hop_explanations)
             path_combinations = Combination([p.path_explanation for p in all_paths])
             os.makedirs(f'{args.output_folder}/prediction', exist_ok=True)
@@ -827,11 +968,7 @@ class Combination:
         self.window_size = 10
         self.top_N = top_N
 
-        if len(explanations):
-            self.combination = self.build_combination()
-        else:
-            self.combination = []
-
+        self.combination = self.build_combination()
 
     def json(self):
         lis = []
@@ -853,12 +990,19 @@ class Combination:
         all_explanations = []
         all_explanations.extend(self.explanations)
 
+        if len(self.explanations) == 0:
+            return all_explanations
+
         if self.explanations[0].relevance > DEFAULT_XSI_THRESHOLD:
             logger.info(f'Early terminate at length 1: {self.explanations[0].relevance} > {DEFAULT_XSI_THRESHOLD}')
             return self.explanations
 
         for cur_rule_length in range(2, min(len(self.explanations), MAX_COMBINATION_SIZE) + 1):
             compound_explanations = self.build_combination_with_length_k(cur_rule_length)
+
+            if len(compound_explanations) == 0:
+                continue
+
             compound_explanations.sort(key=lambda x: x.relevance, reverse=True)
             all_explanations.extend(compound_explanations)
 

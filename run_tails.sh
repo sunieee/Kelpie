@@ -10,14 +10,15 @@ explain() {
         embedding_model=$1
         method=$2
         run=$3  # 111
-        output_folder=results/$dataset/${method}${embedding_model}
+        output_folder=results/$dataset/${method}${embedding_model}-tails
+        
+        echo $output_folder
+        rm -rf $output_folder
         mkdir -p $output_folder
+        
         explain_path=$output_folder/../explain.csv
         model_path=stored_models/"${method}${embedding_model}_${dataset}.pt"
-
-        echo $output_folder
-
-        CUDA_VISIBLE_DEVICES=$device python explain.py --dataset $dataset --method=$method \
+        CUDA_VISIBLE_DEVICES=$device python tails.py --dataset $dataset --method=$method \
                 --model_path $model_path --explain_path $explain_path \
                 --output_folder $output_folder  --run $run --relevance_method hybrid # > $output_folder/output.log
                 # --specify_relation --ignore_inverse \

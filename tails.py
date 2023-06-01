@@ -185,64 +185,28 @@ def print_facts(rule_samples_with_relevance, sample_to_explain):
         #     for i in range(10):
         #         retrain_without_samples(remove_triples=cur_rule_samples, sample_to_explain=sample_to_explain)
 
-path_dic = {}
-cnt_df = pd.DataFrame(columns=['path', 'head', 'tail'])
 
-for i, fact in enumerate(testing_facts):
-    if ignore_triple(fact):
+with open('results/FB15k-237/ConvE/paths.json', 'r') as f:
+    data = json.load(f)
+
+rel_df = pd.DataFrame(columns=['prediction', 'relevance', 'path', 'tail_rel', 'path_rel'])
+for path in data:
+    if path['relevance'] < 0:
         continue
-    head, relation, tail = fact
-    ech(f"Explaining fact {i} on {len(testing_facts)}: + {triple2str(fact)}")
-    logger.info(f"Explaining fact {i} on {len(testing_facts)}: + {triple2str(fact)}")
-    head_id, relation_id, tail_id = dataset.get_id_for_entity_name(head), \
-                                    dataset.get_id_for_relation_name(relation), \
-                                    dataset.get_id_for_entity_name(tail)
-    sample_to_explain = (head_id, relation_id, tail_id)
+
+    triples = path['triples']
+    exp0 = path['explanations'][0]
+    sample_to_explain = tuple(exp0['identifier'][0])
+    tail = sample_to_explain[-1]
+    sample_to_remove = []
+    for t in triples:
+        if tail in [t[0], t[2]]:
+            sample_to_remove.append(tuple(t))
+    print(sample_to_explain, sample_to_remove)
+
+    tail_exp = Explanation.build(sample_to_explain, sample_to_remove, [sample_to_explain[-1]], False)
+
+    rel_df.loc[len(rel_df)] = [sample_to_explain, path['relevance'], triples, tail_exp.relevance, [exp['relevance'] for exp in path['explanations']]]
+
+rel_df.to_csv(f'{args.output_folder}/rel_df.csv', index=False)
     
-    paths = dataset.find_all_path_within_k_hop(head_id, tail_id, 3)
-    heads = set([x[0] for x in paths])
-    tails = set([x[-1] for x in paths])
-    cnt_df.loc[len(cnt_df)] = [len(paths), len(heads), len(tails)]
-    print('path:', len(paths), 'head:', len(heads), 'tail:', len(tails))
-    
-    # randomly select 10 paths from paths
-    selected_paths = random.sample(paths, 10)
-    for p in selected_paths:
-        Path.build(sample_to_explain, [tuple(t) for t in p])
-    if i < 20:
-        path_dic[str(sample_to_explain)] = paths
-    continue
-
-    score, best, rank = extract_detailed_performances(model, sample_to_explain)
-    if rank > 10:
-        logger.info(f'{dataset.sample_to_fact(sample_to_explain, True)} is not a valid prediction (rank={rank}, score={score}). Skip')
-        continue
-    
-    ech(f'input of fact {dataset.sample_to_fact(sample_to_explain, True)} {rank}')
-    # rule_samples_with_relevance = kelpie.explain_necessary(sample_to_explain=sample_to_explain,
-    #                                                         perspective="head",
-    #                                                         num_promising_samples=args.prefilter_threshold)
-    # print_line(f'output of fact {triple2str(fact)}')
-    # print_facts(rule_samples_with_relevance, sample_to_explain)
-
-    # for cur_rule_with_relevance in rule_samples_with_relevance:
-    #     cur_rule_samples, cur_relevance = cur_rule_with_relevance
-    #     if len(cur_rule_samples) == 1:
-    #         print('finding all path for', cur_rule_samples[0])
-    #         target = cur_rule_samples[0][-1] if head_id == cur_rule_samples[0][0] else cur_rule_samples[0][0]
-    #         path = dataset.find_all_path(sample_to_explain, target)
-    explanations = xrule.explain_necessary(sample_to_explain)
-
-print(cnt_df.mean())
-cnt_df.to_csv(f'{args.output_folder}/path_cnt.csv', index=False)
-with open(f'{args.output_folder}/all_paths.json', 'w') as f:
-    json.dump(path_dic, f, indent=4, cls=NumpyEncoder)
-
-# ech('explaination output:')
-# end_time = time.time()
-# print("Explain time: " + str(end_time - start_time) + " seconds")
-# with open(os.path.join(args.output_folder, f"{args.mode}.txt"), "w") as output:
-#     output.writelines(output_lines)
-
-# print('count_dic', count_dic)
-# print('count_dic_mean', {k: np.mean(v) for k, v in count_dic.items()})

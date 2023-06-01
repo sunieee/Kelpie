@@ -237,17 +237,23 @@ class Dataset:
 
 
     def make_dic(self):
-        self.entity_id_2_neighbors = defaultdict(list)
-        self.entity_id_2_train_samples = defaultdict(list)
+        self.entity_id_2_neighbors = defaultdict(set)
+        self.entity_id_2_train_samples = defaultdict(set)
         self.entity_id_2_relation_vector = defaultdict(lambda: np.zeros(2*self.num_relations))
 
         for (h, r, t) in self.train_samples:
-            self.entity_id_2_train_samples[h].append((h, r, t))
-            self.entity_id_2_train_samples[t].append((h, r, t))
+            self.entity_id_2_train_samples[h].add((h, r, t))
+            self.entity_id_2_train_samples[t].add((h, r, t))
             self.entity_id_2_relation_vector[h][r] += 1
             self.entity_id_2_relation_vector[t][r+self.num_relations] += 1
-            self.entity_id_2_neighbors[h].append(t)
-            self.entity_id_2_neighbors[t].append(h)
+            self.entity_id_2_neighbors[h].add(t)
+            self.entity_id_2_neighbors[t].add(h)
+
+        for k, v in self.entity_id_2_neighbors.items():
+            self.entity_id_2_neighbors[k] = list(v)
+        
+        for k, v in self.entity_id_2_train_samples.items():
+            self.entity_id_2_train_samples[k] = list(v)
 
 
     def _read_triples(self, triples_path: str, separator="\t"):
@@ -504,7 +510,7 @@ class Dataset:
                 return True
         return False
     
-    def find_all_path_within_k_hop(self, h, t, k=MAX_PATH_LENGTH, forbidden_entities=[]):
+    def find_all_path_within_k_hop(self, h, t, k=MAX_PATH_LENGTH, forbidden_entities=None):
         """find all path between h and t within k-hop.
         Filter out paths that contain entities in forbidden_entities.
 
@@ -515,6 +521,9 @@ class Dataset:
         """
         if k == 0:
             return []
+        
+        if forbidden_entities is None:
+            forbidden_entities = [h]
 
         paths = []
         for sample in self.entity_id_2_train_samples[h]:
