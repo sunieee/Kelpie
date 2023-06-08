@@ -47,19 +47,23 @@ if int(args.run[1]):
     ech("making facts to explain...")
     lis = []
     print("{:^15}\t{:^15}\t{:^15}\t{:^15}".format('relation', '#targets', '#triples', '#top_triples'))
-    df = pd.read_csv(os.path.join(args.output_folder, 'filtered_ranks.csv'), sep=';', header=None)
+    print(os.path.join(args.output_folder, 'filtered_ranks.csv'))
+    df = pd.read_csv(os.path.join(args.output_folder, 'filtered_ranks.csv'), sep=';', header=None, dtype=str)
     df.columns = ['h', 'r', 't', 'hr', 'tr']
+    df['hr'] = df['hr'].astype(int)
+    df['tr'] = df['tr'].astype(int)
 
     for d in set(df['r']):
         rel_df = df[df['r'] == d]
+        rel_df.reset_index(inplace=True)
         size = len(dataset.rid2target[dataset.relation_name_2_id[d]])
         top_count = 0
-        for i in range(len(df)):
+        for i in range(len(rel_df)):
             # if df.loc[i, 'tr'] <= math.ceil(size*0.05):
-            if df.loc[i, 'tr'] <= 5 and not ignore_triple(df.loc[i, ['h', 'r', 't']]):
+            if rel_df.loc[i, 'tr'] == 1 and not ignore_triple(rel_df.loc[i, ['h', 'r', 't']]):
                 top_count += 1
-                lis.append('\t'.join([df.loc[i, 'h'], df.loc[i, 'r'], df.loc[i, 't']]))
-        print("{:^15}\t{:^15}\t{:^15}\t{:^15}".format(d, size, len(df), top_count))
+                lis.append('\t'.join([str(rel_df.loc[i, 'h']), rel_df.loc[i, 'r'], str(rel_df.loc[i, 't'])]))
+        print("{:^15}\t{:^15}\t{:^15}\t{:^15}".format(d, size, len(rel_df), top_count))
 
     with open(args.explain_path, 'w') as f:
         f.write('\n'.join(lis))
@@ -186,39 +190,145 @@ def print_facts(rule_samples_with_relevance, sample_to_explain):
         #         retrain_without_samples(remove_triples=cur_rule_samples, sample_to_explain=sample_to_explain)
 
 path_dic = {}
-cnt_df = pd.DataFrame(columns=['path', 'head', 'tail'])
+cnt_df = pd.DataFrame(columns=['prediction', 'fact','#paths', '#heads', '#hop2', '#tails', '#meta_path', 'max_meta', '#super_path', 'max_super', '#ph', '#p2', '#pt', '#meta_h', '#meta_t'])
 
-for i, fact in enumerate(testing_facts):
+def path_statistic(sample_to_explain):
+    head_id, relation_id, tail_id = sample_to_explain
+    # make a statistic of path on the prediction
+    paths = dataset.find_all_path_within_k_hop(head_id, tail_id, 3)
+    try:
+        heads = set([x[0] for x in paths])
+        hop2 = set([x[1] for x in paths])
+        tails = set([x[-1] for x in paths])
+    except Exception as e:
+        print(e)
+        print(paths)
+        return
+
+    ph = set([x[0][-1] for x in paths])
+    p2 = set([x[1][-1] for x in paths])
+    pt = set([x[-1][0] for x in paths])
+    meta_path = defaultdict(int)
+    super_path = defaultdict(int)
+    meta_h = set([x[0][1] for x in paths])
+    meta_t = set([x[-1][1] for x in paths])
+    for p in paths:
+        meta = [t[1] for t in p]
+        meta_path[tuple(meta)] += 1
+        super = [t[0] for t in p]
+        super_path[tuple(super)] += 1
+    max_meta = max(list(meta_path.values()) + [0])
+    max_super = max(list(super_path.values()) + [0])
+    cnt_df.loc[len(cnt_df)] = [str(sample_to_explain), str(fact) , len(paths), len(heads), len(hop2), len(tails), len(meta_path), max_meta, len(super_path), max_super, len(ph), len(p2), len(pt), len(meta_h), len(meta_t)]
+    print('path:', len(paths), 'head:', len(heads),'hop2', len(hop2), 'tail:', len(tails), 'rel_typ:', len(meta_path), 'max_rel_typ:', max_meta, 'ph:', len(ph), 'p2:', len(p2), 'pt:', len(pt), 'meta_h:', len(meta_h), 'meta_t:', len(meta_t))
+    cnt_df.to_csv(f'{args.output_folder}/path_cnt.csv', index=False)
+    if i < 20:
+        path_dic[str(sample_to_explain)] = paths
+
+
+def random_explain_path(super_paths):
+    # randomly select 10 paths from paths
+    # selected_paths = random.sample(paths, min(10, len(paths)))
+    # for p in selected_paths:
+    #     Path(sample_to_explain, [tuple(t) for t in p])
+    
+    # randomly select 10 super paths from super paths
+    selected_super_paths = random.sample(super_paths, min(10, len(super_paths)))
+    for p in selected_super_paths:
+        print('sample_to_explain', sample_to_explain, 'construct super path', p)
+        SuperPath(sample_to_explain, list(p))
+
+hop_df = pd.DataFrame()
+
+
+def random_explain_group(first_hops, last_hops, sample_to_explain):
+    head_id, relation_id, tail_id = sample_to_explain
+    hop_dic = {
+        'head': first_hops,
+        'tail': last_hops
+    }
+    target_id = {
+        'head': head_id,
+        'tail': tail_id
+    }
+    for target in ['head', 'tail']:
+        hops = hop_dic[target]
+        selected_hops = random.sample(hops, min(10, len(hops)))
+        all_samples_to_remove = set()
+        logger.info(f'hops on {target}: {hops}')
+        logger.info(f'selected hops: {selected_hops}')
+
+        for hop in selected_hops:
+            samples_to_remove = args.available_samples[target_id[target]] & args.available_samples[hop]
+            all_samples_to_remove |= samples_to_remove
+        all_exp = Explanation.build(sample_to_explain, list(all_samples_to_remove), [target_id[target]])
+
+        for hop in selected_hops:
+            ech(f'explaining hop {hop} on sample {sample_to_explain}')
+            samples_to_remove = args.available_samples[target_id[target]] & args.available_samples[hop]
+            exp = Explanation.build(sample_to_explain, list(samples_to_remove), [target_id[target]])
+            ret = {
+                'prediction': dataset.sample_to_fact(sample_to_explain, True), 
+                'perspective': target, 
+                'hop': hop, 
+                'rel': exp.relevance, 
+                '#remove': len(samples_to_remove), 
+                '#hops': len(selected_hops), 
+                'all_rel': all_exp.relevance,
+            }
+            for p in [1, 2, float('inf')]:
+                ret.update({
+                    f'delta_{p}': exp.ret[f'delta_{p}'],
+                    f'delta_all_{p}': all_exp.ret[f'delta_{p}'],
+                    f'partial_t_{p}': exp.ret[f'partial_t_{p}'],
+                    f'partial_h_{p}': exp.ret[f'partial_h_{p}'],
+                    f'partial_h_all_{p}': all_exp.ret[f'partial_h_{p}'],
+                    f'partial_t_all_{p}': all_exp.ret[f'partial_t_{p}'],
+                })
+
+            update_df(hop_df, ret, 'hops.csv')
+
+
+for i, fact in enumerate(testing_facts[:2000]):
     if ignore_triple(fact):
         continue
     head, relation, tail = fact
     ech(f"Explaining fact {i} on {len(testing_facts)}: + {triple2str(fact)}")
-    logger.info(f"Explaining fact {i} on {len(testing_facts)}: + {triple2str(fact)}")
+    # logger.info(dataset.entity_name_2_id)
     head_id, relation_id, tail_id = dataset.get_id_for_entity_name(head), \
                                     dataset.get_id_for_relation_name(relation), \
                                     dataset.get_id_for_entity_name(tail)
     sample_to_explain = (head_id, relation_id, tail_id)
+    logger.info(f"Explaining fact {i} on {len(testing_facts)}: + {dataset.sample_to_fact(sample_to_explain, True)}")
     
-    paths = dataset.find_all_path_within_k_hop(head_id, tail_id, 3)
-    heads = set([x[0] for x in paths])
-    tails = set([x[-1] for x in paths])
-    cnt_df.loc[len(cnt_df)] = [len(paths), len(heads), len(tails)]
-    print('path:', len(paths), 'head:', len(heads), 'tail:', len(tails))
-    
-    # randomly select 10 paths from paths
-    selected_paths = random.sample(paths, 10)
-    for p in selected_paths:
-        Path.build(sample_to_explain, [tuple(t) for t in p])
-    if i < 20:
-        path_dic[str(sample_to_explain)] = paths
-    continue
-
     score, best, rank = extract_detailed_performances(model, sample_to_explain)
     if rank > 10:
         logger.info(f'{dataset.sample_to_fact(sample_to_explain, True)} is not a valid prediction (rank={rank}, score={score}). Skip')
         continue
-    
     ech(f'input of fact {dataset.sample_to_fact(sample_to_explain, True)} {rank}')
+    
+    
+    # path_statistic(sample_to_explain)
+    paths = dataset.find_all_path_within_k_hop(head_id, tail_id, 3)
+    super_paths = set()
+    available_samples = defaultdict(set)
+    first_hops = set()
+    last_hops = set()
+    for p in paths:
+        super = get_path_entities(sample_to_explain, p)
+        first_hops.add(super[1])
+        last_hops.add(super[-2])
+        super_paths.add(tuple(super))
+        for t in p:
+            # print(t, t[0], t[2])
+            available_samples[t[0]].add(t)
+            available_samples[t[2]].add(t)
+    args.available_samples = available_samples
+    print('global_avilable_samples on path', len(args.available_samples))
+    # random_explain_path(super_paths)
+    # random_explain_group(first_hops, last_hops, sample_to_explain)
+    
+    
     # rule_samples_with_relevance = kelpie.explain_necessary(sample_to_explain=sample_to_explain,
     #                                                         perspective="head",
     #                                                         num_promising_samples=args.prefilter_threshold)
@@ -231,9 +341,10 @@ for i, fact in enumerate(testing_facts):
     #         print('finding all path for', cur_rule_samples[0])
     #         target = cur_rule_samples[0][-1] if head_id == cur_rule_samples[0][0] else cur_rule_samples[0][0]
     #         path = dataset.find_all_path(sample_to_explain, target)
-    explanations = xrule.explain_necessary(sample_to_explain)
+    # explanations = xrule.explain_necessary(sample_to_explain)
 
-print(cnt_df.mean())
+print(cnt_df.describe())
+cnt_df.describe().to_csv(f'{args.output_folder}/describe.csv', index=False)
 cnt_df.to_csv(f'{args.output_folder}/path_cnt.csv', index=False)
 with open(f'{args.output_folder}/all_paths.json', 'w') as f:
     json.dump(path_dic, f, indent=4, cls=NumpyEncoder)

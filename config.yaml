@@ -49,7 +49,7 @@ MOF-3000:
     D: 200
     LR: 0.003
     B: 4096
-    Ep: 20
+    Ep: 10
     REp: 20 # kelpie retrain epoched
     Decay: 0.995
     epsilon: 0.1
@@ -86,7 +86,7 @@ FB15k:
     D: 200
     LR: 0.003
     B: 128
-    Ep: 1000
+    Ep: 10
     Decay: 0.995
     epsilon: 0.1
     Drop:
@@ -115,14 +115,20 @@ FB15k-237:
     D: 200
     LR: 0.003
     B: 128
-    Ep: 10
-    REp: 30
+    Ep: 2
+    REp: 50
     Decay: 0.995
     epsilon: 0.1
     Drop:
       in: 0.2
       h: 0.3
       feat: 0.2
+    coef:
+      k_h: 0.11
+      k_t: 0.012
+      k: 0.58
+      g_h: 0.15
+      g_t: 0.25
 
 WN18:
   TransE:
@@ -145,7 +151,7 @@ WN18:
     D: 200
     LR: 0.003
     B: 128
-    Ep: 1000
+    Ep: 10
     Decay: 0.995
     epsilon: 0.1
     Drop:
@@ -153,7 +159,7 @@ WN18:
       h: 0.3
       feat: 0.2
 
-WN18-RR:
+WN18RR:
   TransE:
     D: 50
     LR: 0.0001
@@ -174,7 +180,7 @@ WN18-RR:
     D: 200
     LR: 0.003
     B: 128
-    Ep: 1000
+    Ep: 10
     Decay: 0.995
     epsilon: 0.1
     Drop:
@@ -203,7 +209,7 @@ YAGO3-10:
     D: 200
     LR: 0.003
     B: 128
-    Ep: 1000
+    Ep: 10
     Decay: 0.995
     epsilon: 0.1
     Drop:
