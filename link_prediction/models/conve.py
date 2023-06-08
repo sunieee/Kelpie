@@ -99,7 +99,7 @@ class ConvE(Model):
     def forward(self, samples: np.array, restrain=False):
         """
             Perform forward propagation on the passed samples
-            :param samples: a 2-dimensional np array containing the samples to use in forward propagation, one per row
+            :param samples: a 2-dimensional numpy array containing the samples to use in forward propagation, one per row
             :return: a tuple containing
                         - the scores for each passed sample with all possible tails
                         - a partial result to use in regularization
@@ -109,8 +109,8 @@ class ConvE(Model):
     def score(self, samples: np.array) -> np.array:
         """
             Compute scores for the passed samples
-            :param samples: a 2-dimensional np array containing the samples to score, one per row
-            :return: a np array containing the scores of the passed samples
+            :param samples: a 2-dimensional numpy array containing the samples to score, one per row
+            :return: a numpy array containing the scores of the passed samples
         """
         # compute scores for each possible tail
         all_scores = self.all_scores(samples)
@@ -209,76 +209,6 @@ class ConvE(Model):
         self.trainable_entity_embeddings = nn.Parameter(init_embeddings, requires_grad=True)
         # self.update_embeddings()
 
-    def calculate_g(self, head_embeddings, relation_embeddings):
-        head_embeddings = head_embeddings.view(-1, 1, self.embedding_width, self.embedding_height)
-        relation_embeddings = relation_embeddings.view(-1, 1, self.embedding_width, self.embedding_height)
-
-        stacked_inputs = torch.cat([head_embeddings, relation_embeddings], 2)
-        stacked_inputs = self.batch_norm_1(stacked_inputs)
-        stacked_inputs = self.input_dropout(stacked_inputs)
-
-        feature_map = self.convolutional_layer(stacked_inputs)
-        feature_map = self.batch_norm_2(feature_map)
-        feature_map = torch.relu(feature_map)
-        feature_map = self.feature_map_dropout(feature_map)
-        feature_map = feature_map.view(feature_map.shape[0], -1)
-
-        x = self.hidden_layer(feature_map)
-        x = self.hidden_dropout(x)
-        x = self.batch_norm_3(x)
-        return torch.relu(x)
-
-
-    def calculate_grad(self, sample_to_explain: np.array):
-        """calculate:
-        1. partial_t_h
-        2. partial_t
-        3. partial_h
-        """
-        assert len(sample_to_explain) == 3
-        samples = np.array([sample_to_explain])
-
-        if self.trainable_indices is not None:
-            entity_embeddings = torch.zeros_like(self.entity_embeddings, device='cuda')
-            with torch.no_grad():
-                entity_embeddings[self.frozen_indices] = self.frozen_entity_embeddings[self.frozen_indices]
-            entity_embeddings[self.trainable_indices] = self.trainable_entity_embeddings
-        else:
-            entity_embeddings  = self.entity_embeddings
-
-        head_embeddings = entity_embeddings[samples[:, 0]]
-        relation_embeddings = self.relation_embeddings[samples[:, 1]]
-        tail_embeddings = entity_embeddings[samples[:, 2]]
-        
-        g = self.calculate_g(head_embeddings, relation_embeddings)
-        output = torch.mm(g, tail_embeddings.transpose(1, 0))
-
-        grad_g = torch.autograd.grad(outputs=g, inputs=head_embeddings, grad_outputs=torch.ones_like(g), create_graph=True,  retain_graph=True)
-
-        grad = torch.autograd.grad(outputs=output, inputs=(head_embeddings, tail_embeddings), grad_outputs=torch.ones_like(output), create_graph=True,  retain_graph=True)
-        dh_dt_grad = torch.autograd.grad(outputs=grad[0], inputs=tail_embeddings, grad_outputs=torch.ones_like(grad[0]), create_graph=True,  retain_graph=True)
-        dt_dh_grad = torch.autograd.grad(outputs=grad[1], inputs=head_embeddings, grad_outputs=torch.ones_like(grad[1]), create_graph=True,  retain_graph=True)
-
-        all_ret = {}
-        for p in [1, 2, float('inf')]:
-            ret = {
-                f'partial_{p}': torch.norm(grad_g[0], p=p),
-                f'partial_t_{p}': torch.norm(g, p=p),
-                f'partial_h_{p}': torch.norm(grad_g[0]) * torch.norm(tail_embeddings, p=p),
-                f'dh_dt_grad_{p}': torch.norm(dh_dt_grad[0], p=p),
-                f'dt_dh_grad_{p}': torch.norm(dt_dh_grad[0], p=p),
-                f'dh_grad_{p}': torch.norm(grad[0], p=p),
-                f'dt_grad_{p}': torch.norm(grad[1], p=p)
-            }
-            all_ret.update(ret)
-
-        # detach and move all the values tensor to cpu
-        for k, v in all_ret.items():
-            all_ret[k] = rd(v.detach().cpu().numpy().item())
-
-        return all_ret
-
-
     def end_post_train(self):
         # end post-training
         self.frozen_entity_embeddings = None
@@ -293,8 +223,8 @@ class ConvE(Model):
     def all_scores(self, samples: np.array, restrain=False) -> np.array:
         """
             For each of the passed samples, compute scores for all possible tail entities.
-            :param samples: a 2-dimensional np array containing the samples to score, one per row
-            :return: a 2-dimensional np array that, for each sample, contains a row for each passed sample
+            :param samples: a 2-dimensional numpy array containing the samples to score, one per row
+            :return: a 2-dimensional numpy array that, for each sample, contains a row for each passed sample
                      and a column for each possible tail
         """
         # entity_embeddings, relation_embeddings = self.get_embedding()
@@ -308,10 +238,31 @@ class ConvE(Model):
         else:
             entity_embeddings  = self.entity_embeddings
 
+
+        # list of entity embeddings for the heads of the facts
         head_embeddings = entity_embeddings[samples[:, 0]]
+        head_embeddings = head_embeddings.view(-1, 1, self.embedding_width, self.embedding_height)
+
+        # list of relation embeddings for the relations of the heads
         relation_embeddings = relation_embeddings[samples[:, 1]]
-        
-        x = self.calculate_g(head_embeddings, relation_embeddings)
+        relation_embeddings = relation_embeddings.view(-1, 1, self.embedding_width, self.embedding_height)
+
+        # tail_embeddings = self.entity_embeddings[samples[:, 2]].view(-1, 1, self.embedding_width, self.embedding_height)
+
+        stacked_inputs = torch.cat([head_embeddings, relation_embeddings], 2)
+        stacked_inputs = self.batch_norm_1(stacked_inputs)
+        stacked_inputs = self.input_dropout(stacked_inputs)
+
+        feature_map = self.convolutional_layer(stacked_inputs)
+        feature_map = self.batch_norm_2(feature_map)
+        feature_map = torch.relu(feature_map)
+        feature_map = self.feature_map_dropout(feature_map)
+        feature_map = feature_map.view(feature_map.shape[0], -1)
+
+        x = self.hidden_layer(feature_map)
+        x = self.hidden_dropout(x)
+        x = self.batch_norm_3(x)
+        x = torch.relu(x)
 
         if restrain:
             tail_embeddings = entity_embeddings[self.get_tail_set(samples)]

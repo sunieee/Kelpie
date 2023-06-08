@@ -1,9 +1,9 @@
 from typing import Any, Tuple
+import numpy
 import torch
 from torch import nn
 from dataset import Dataset
 from collections import defaultdict
-import numpy as np
 
 # KEYS FOR SUPPORTED HYPERPARAMETERS (to use in hyperparameter dicts)
 DIMENSION = "dimension"                         # embedding dimension, when both entity and relation embeddings have same dimension
@@ -43,9 +43,6 @@ def terminate_at(length, count):
     count_dic[length].append(count)
     print(f'\tnumber of rules with length {length}: {count}')
 
-def rd(x):
-    return np.round(x, 4)
-
 class Model(nn.Module):
     """
         The Model class provides the interface that any LP model should implement.
@@ -62,7 +59,7 @@ class Model(nn.Module):
         All models work with entity and relation ids directly (not with their names),
         that they found from the Dataset object used to initialize the Model.
 
-        Whenever a Model method requires samples, it accepts them in the form of 2-dimensional np.arrays,
+        Whenever a Model method requires samples, it accepts them in the form of 2-dimensional numpy.arrays,
         where each row corresponds to a sample and contains the integer ids of its head, relation and tail.
     """
 
@@ -77,27 +74,27 @@ class Model(nn.Module):
         """
         pass
 
-    def score(self, samples: np.array) -> np.array:
+    def score(self, samples: numpy.array) -> numpy.array:
         """
             This method computes and returns the plausibility scores for a collection of samples.
 
-            :param samples: a np array containing all the samples to score
-            :return: the computed scores, as a np array
+            :param samples: a numpy array containing all the samples to score
+            :return: the computed scores, as a numpy array
         """
         pass
 
     # override
-    def all_scores(self, samples: np.array):
+    def all_scores(self, samples: numpy.array):
         """
             This method computes, For each of the passed samples, the score for all possible tail entities.
-            :param samples: a 2-dimensional np array containing the samples to score, one per row
-            :return: a 2-dimensional np array that, for each sample, contains a row for each passed sample
+            :param samples: a 2-dimensional numpy array containing the samples to score, one per row
+            :return: a 2-dimensional numpy array that, for each sample, contains a row for each passed sample
                      and a column for each possible tail
         """
 
         pass
 
-    def forward(self, samples: np.array):
+    def forward(self, samples: numpy.array):
         """
             This method performs forward propagation for a collection of samples.
             This method is only used in training, when an Optimizer calls it passing the current batch of samples.
@@ -108,11 +105,11 @@ class Model(nn.Module):
             but may also include other stuff (e.g. the involved embeddings themselves, that the Optimizer
             may use to compute regularization factors)
 
-            :param samples: a np array containing all the samples to perform forward propagation on
+            :param samples: a numpy array containing all the samples to perform forward propagation on
         """
         pass
 
-    def predict_samples(self, samples: np.array) -> Tuple[Any, Any, Any]:
+    def predict_samples(self, samples: numpy.array) -> Tuple[Any, Any, Any]:
         """
             This method performs prediction on a collection of samples, and returns the corresponding
             scores, ranks and prediction lists.
@@ -121,7 +118,7 @@ class Model(nn.Module):
             (if the Model supports inverse samples as well,
             it should invert the passed samples while running this method)
 
-            :param samples: the direct samples to predict, in np array format
+            :param samples: the direct samples to predict, in numpy array format
             :return: this method returns three lists:
                         - the list of scores for the passed samples,
                                     OR IF THE MODEL SUPPORTS INVERSE FACTS
@@ -134,16 +131,16 @@ class Model(nn.Module):
                         - the list of couples (head_predictions, tail_predictions)
                             where the i-th couple refers to the i-th sample in the input samples.
                             The head_predictions and tail_predictions for each sample
-                            are np arrays containing all the predicted heads and tails respectively for that sample.
+                            are numpy arrays containing all the predicted heads and tails respectively for that sample.
         """
         pass
 
-    def predict_sample(self, sample: np.array) -> Tuple[Any, Any, Any]:
+    def predict_sample(self, sample: numpy.array) -> Tuple[Any, Any, Any]:
         """
             This method performs prediction on one (direct) sample, and returns the corresponding
             score, ranks and prediction lists.
 
-            :param sample: the sample to predict, as a np array.
+            :param sample: the sample to predict, as a numpy array.
             :return: this method returns 3 items:
                     - the sample score
                              OR IF THE MODEL SUPPORTS INVERSE FACTS
@@ -151,16 +148,16 @@ class Model(nn.Module):
 
                     - a couple containing the head rank and the tail rank
 
-                    - a couple containing the head_predictions and tail_predictions np arrays;
+                    - a couple containing the head_predictions and tail_predictions numpy arrays;
                         > head_predictions contains all entities predicted as heads, sorted by decreasing plausibility
-                        [NB: the target head will be in this np array in position head_rank-1]
+                        [NB: the target head will be in this numpy array in position head_rank-1]
                         > tail_predictions contains all entities predicted as tails, sorted by decreasing plausibility
-                        [NB: the target tail will be in this np array in position tail_rank-1]
+                        [NB: the target tail will be in this numpy array in position tail_rank-1]
         """
 
         assert sample[1] < self.dataset.num_direct_relations
 
-        scores, ranks, predictions = self.predict_samples(np.array([sample]))
+        scores, ranks, predictions = self.predict_samples(numpy.array([sample]))
         return scores[0], ranks[0], predictions[0]
 
     def kelpie_model_class(self):
@@ -188,7 +185,7 @@ class KelpieModel(Model):
 
     # override
     def predict_samples(self,
-                        samples: np.array,
+                        samples: numpy.array,
                         original_mode: bool = False):
         """
         This method interface overrides the superclass method by adding the option to run predictions in original_mode,
@@ -197,14 +194,14 @@ class KelpieModel(Model):
         :param samples: the DIRECT samples. They will be inverted to perform head prediction
         :param original_mode: a boolean flag specifying whether to work in original_mode or to use the kelpie entity
 
-        :return: a np array containing
+        :return: a numpy array containing
         """
         pass
 
 
     # Override
     def predict_sample(self,
-                       sample: np.array,
+                       sample: numpy.array,
                        original_mode: bool = False):
         """
         This method interface overrides the superclass method by adding the option to run predictions in original_mode,

@@ -254,17 +254,14 @@ torch.save(model.state_dict(), f'{args.output_folder}/params.pth')
 args.state_dict = torch.load(f'{args.output_folder}/params.pth')
 
 # MAX_POST_TRAIN_TIMES = 5
-MAX_POST_TRAIN_TIMES = 3
+MAX_POST_TRAIN_TIMES = 2
 MAX_TRAINING_THRESH = 300
 MAX_COMBINATION_SIZE = 4
 DEFAULT_XSI_THRESHOLD = 0.2
 DEFAULT_VALID_THRESHOLD = 0.02
 MAKE_COMBINATION = False
-BASE_ADDITION_ON_PT = False    
-# IMPORTANT: BASE_ADDITION_ON_PT can not be True, because, training base on pt will surely decrease the score  
-CALCULATE_REAL_REL = False
-MAX_EMBEDDING_DIFF_L2 = 0.1
-NORMALIZE_DIFF = False
+state_dict_path = f'{args.output_folder}/state_dict'    # saving state_dict for each base identifier
+os.makedirs(state_dict_path, exist_ok=True)
 
 
 if isinstance(model, ComplEx):
@@ -297,9 +294,9 @@ def get_removel_relevance(rank_delta, score_delta):
     if args.relevance_method == 'kelpie':
         relevance = float(rank_delta + sigmoid(score_delta))
     elif args.relevance_method == 'rank':
-        relevance = rank_delta
+        relevance = np.tanh(rank_delta)
     elif args.relevance_method == 'score':
-        relevance = score_delta
+        relevance = np.tanh(score_delta)
     elif args.relevance_method == 'hybrid':
         relevance = np.tanh(rank_delta) + np.tanh(score_delta)
     return rd(relevance)
@@ -343,35 +340,6 @@ def extract_training_samples_length(trainable_entities) -> np.array:
     # stack a list of training samples, each of them is a tuple
     return len(original_train_samples)
 
-def mean_of_tensor_list(tensor_list):
-    return torch.mean(torch.stack(tensor_list), dim=0)
-
-def unfold(lis):
-    # check if is tensor, if so, tolist
-    if isinstance(lis, torch.Tensor):
-        lis = lis.tolist()
-    if not hasattr(lis, '__iter__'):
-        return lis
-    if len(lis) == 1:
-        return unfold(lis[0])
-    return lis
-
-def get_path_entities(sample_to_explain, path):
-    last_entity_on_path = sample_to_explain[0]
-    path_entities = [last_entity_on_path]
-    for triple in path:
-        target = triple[2] if triple[0] == last_entity_on_path else triple[0]
-        path_entities.append(target)
-        last_entity_on_path = target
-    return path_entities
-
-def update_df(df, dic, save_path):
-    for key in set(dic.keys()) - set(df.columns):
-        df[key] = None
-    df.loc[len(df)] = dic
-    df.to_csv(f'{args.output_folder}/{save_path}', index=False)
-
-
 identifier2explanations = defaultdict(list)
 base_identifier2next_triples = defaultdict(set)
 base_identifier2trainable_entities_embedding = {}
@@ -393,14 +361,14 @@ class Explanation:
         :param samples_to_remove:   the list of samples containing the perspective entity
                                     that we want to analyze the effect of, if added to the perspective entity
     """
-    df = pd.DataFrame()
+    df = pd.DataFrame(columns=['sample_to_explain', 'identifier', 'samples_to_remove', 'length', 'base_score', 'base_best', 'base_rank', 'pt_score', 'pt_best', 'pt_rank', 'rank_worsening', 'score_worsening', 'relevance'])
     
     def _get_kelpie_init_tensor(self):
         embeddings = []
         for entity in self.trainable_entities:
             if entity not in self._kelpie_init_tensor_cache:
                 kelpie_init_tensor_size = model.dimension if not isinstance(model, TuckER) else model.entity_dimension
-                self._kelpie_init_tensor_cache[entity] = torch.rand(1, kelpie_init_tensor_size, device='cuda') - 0.5   # 
+                self._kelpie_init_tensor_cache[entity] = torch.rand(1, kelpie_init_tensor_size, device='cuda') - 0.5
             embeddings.append(self._kelpie_init_tensor_cache[entity])
         return torch.cat(embeddings, dim=0)
     
@@ -410,13 +378,14 @@ class Explanation:
             original_train_samples.extend(dataset.entity_id_2_train_samples[entity])
         # stack a list of training samples, each of them is a tuple
         self.original_train_samples = np.stack(original_train_samples, axis=0)
-        ids = []
+        self.ids = []
         for sample in self.samples_to_remove:
-            ids.append(self.original_train_samples.tolist().index(list(sample)))
-        self.pt_train_samples = np.delete(self.original_train_samples, ids, axis=0)
+            self.ids.append(self.original_train_samples.tolist().index(list(sample)))
+        self.pt_train_samples = np.delete(self.original_train_samples, self.ids, axis=0)
         self.base_train_samples = self.original_train_samples
 
         # self.empty_samples = np.delete(self.original_train_samples, list(range(len(self.original_train_samples))), axis=0)
+
     
     def _extract_training_samples_sharing_others(self) -> np.array:
         """extract training samples from the dataset for the trainable entities
@@ -434,11 +403,11 @@ class Explanation:
                 if target in self.trainable_entities:
                     path_samples.add(sample)
 
-        # self.ids = []
-        # original_train_samples_list = list(original_train_samples)
-        # original_train_samples_list.sort()
-        # for sample in self.samples_to_remove:
-        #     self.ids.append(original_train_samples_list.index(sample))
+        self.ids = []
+        original_train_samples_list = list(original_train_samples)
+        original_train_samples_list.sort()
+        for sample in self.samples_to_remove:
+            self.ids.append(original_train_samples_list.index(sample))
 
         if self.base_identifier in base_identifier2next_triples:
             next_triples_cnt = len(base_identifier2next_triples[self.base_identifier])
@@ -455,7 +424,6 @@ class Explanation:
         # stack a list of training samples, each of them is a tuple
         self.original_train_samples = np.stack(list(original_train_samples), axis=0)
         self.base_train_samples = np.stack(list(base_train_samples), axis=0)
-        self.addition_train_samples = np.stack(list(self.samples_to_remove), axis=0)
         if len(pt_train_samples) == 0:
             self.pt_train_samples = []
         else:
@@ -467,13 +435,9 @@ class Explanation:
 
         if self.base_identifier not in base_identifier2trainable_entities_embedding:    
             logger.info(f'[post-training on share] {len(share_train_samples)}/{len(self.original_train_samples)} samples, {hyperparameters[RETRAIN_EPOCHS]} epoches')
-            self.sharing = False
-            results = []
-            for _ in range(MAX_POST_TRAIN_TIMES):
-                results.append(self.post_training_save(np.stack(list(share_train_samples), axis=0)))
-            base_identifier2trainable_entities_embedding[self.base_identifier] = mean_of_tensor_list(results)
-            self.sharing = True
-            target_entity_score, best_entity_score, target_entity_rank = self.extract_detailed_performances_on_embeddings(base_identifier2trainable_entities_embedding[self.base_identifier])
+            target_entity_score, \
+            best_entity_score, \
+            target_entity_rank = self.post_training_save(np.stack(list(share_train_samples), axis=0), save=True)
             logger.info(f'[post-training on share] target_entity_score: {target_entity_score}, best_entity_score: {best_entity_score}, target_entity_rank: {target_entity_rank}')
             
 
@@ -498,7 +462,8 @@ class Explanation:
         if len(explanation.samples_to_remove) <= MAX_COMBINATION_SIZE: 
             identifier2explanations[explanation.identifier] = explanation
 
-        update_df(Explanation.df, explanation.ret, "output_details.csv")
+        Explanation.df.loc[len(Explanation.df)] = explanation.ret
+        Explanation.df.to_csv(os.path.join(args.output_folder, f"output_details.csv"), index=False)
         logger.info(f"Explanation created. {str(explanation.ret)}")
         return explanation
 
@@ -548,89 +513,37 @@ class Explanation:
         # print('[Explanation]no post training:')
         # self.post_training_multiple(self.empty_samples)
         # create a numpy array of shape (0, 3) to avoid post training
-        if BASE_ADDITION_ON_PT:
-            pt_training = self.pt_training_addition
-            base_training = self.base_training_addition
-        else:
-            pt_training = self.pt_training_multiple
-            base_training = self.base_training_multiple
+        
+        base_pt_target_entity_score, \
+        base_pt_best_entity_score, \
+        base_pt_target_entity_rank = self.base_training_multiple()
 
         pt_target_entity_score, \
         pt_best_entity_score, \
-        pt_target_entity_rank, \
-        pt_embeddings = pt_training()
-        
-        base_target_entity_score, \
-        base_best_entity_score, \
-        base_target_entity_rank, \
-        base_embeddings = base_training()
+        pt_target_entity_rank = self.pt_training_multiple()
 
-        diff = pt_embeddings - base_embeddings
-
-        if NORMALIZE_DIFF:
-            delta_l2 = torch.norm(diff, p=2, dim=1)
-
-            # print('delta embeddings', diff.shape)
-            # print('delta_l2', delta_l2)
-
-            # normalize the diff to have the same l2 norm as the original diff
-            for i in range(len(delta_l2)):
-                if delta_l2[i] > MAX_EMBEDDING_DIFF_L2:
-                    diff[i] /= delta_l2[i] / MAX_EMBEDDING_DIFF_L2
-            pt_embeddings = base_embeddings + diff
-            pt_target_entity_score, \
-            pt_best_entity_score, \
-            pt_target_entity_rank = self.extract_detailed_performances_on_embeddings(pt_embeddings)
-        # logger.info(f"Explanation created. Rank worsening: {rank_worsening}, score worsening: {score_worsening}")
-            
-        rank_worsening = pt_target_entity_rank - base_target_entity_rank
-        score_worsening = base_target_entity_score - pt_target_entity_score
+        rank_worsening = (pt_target_entity_rank - base_pt_target_entity_rank) / base_pt_target_entity_rank
+        score_worsening = (base_pt_target_entity_score - pt_target_entity_score) / base_pt_target_entity_score
         if model.is_minimizer():
             score_worsening *= -1
 
-        # calculate the gradient using the average of the two embeddings
-        self.grad = self.extract_grad((pt_embeddings + base_embeddings) / 2)
+        # logger.info(f"Explanation created. Rank worsening: {rank_worsening}, score worsening: {score_worsening}")
 
         self.relevance = get_removel_relevance(rank_worsening, score_worsening)
         self.ret = {'sample_to_explain': dataset.sample_to_fact(self.sample_to_explain, True),
                 'identifier': self.identifier,
                 # 'samples_to_remove': self.samples_to_remove,
                 'length': len(self.samples_to_remove),
-                'base_score': base_target_entity_score,
-                'base_best': base_best_entity_score,
-                'base_rank': base_target_entity_rank,
+                'base_score': base_pt_target_entity_score,
+                'base_best': base_pt_best_entity_score,
+                'base_rank': base_pt_target_entity_rank,
                 'pt_score': pt_target_entity_score,
                 'pt_best': pt_best_entity_score,
                 'pt_rank': pt_target_entity_rank,
                 'rank_worsening': rank_worsening,
                 'score_worsening': score_worsening,
-                'relevance': self.relevance,
-                'pt_delta_2': unfold(torch.norm(pt_embeddings - self.get_init_tensor(), p=2)),
-                'base_delta_2': unfold(torch.norm(base_embeddings - self.get_init_tensor(), p=2)),
-                'delta_1': unfold(torch.norm(diff, p=1, dim=1)),
-                'delta_2': unfold(torch.norm(diff, p=2, dim=1)),
-                'delta_inf': unfold(torch.norm(diff, p=float('inf'), dim=1)),
-                **self.grad
-        }
+                'relevance': self.relevance}
 
-
-    def base_training_addition(self):
-        lr = hyperparameters[LEARNING_RATE] / 10
-        epoches = int(hyperparameters[RETRAIN_EPOCHS] / 10)
-        logger.info(f'[base_training_addition] {len(self.addition_train_samples)}/{len(self.original_train_samples)} samples, {epoches} epoches, lr={lr}')
-        results = []
-        for i in range(MAX_POST_TRAIN_TIMES):
-            results.append(self.post_training_save(self.addition_train_samples, init_tensor=self.pt_train_embeddings, lr=lr, epoches=epoches))
-        target_entity_score, \
-        best_entity_score, \
-        target_entity_rank, \
-        delta_embeddings = zip(*results)
-        logger.info(f'train {i+1} times, score: {mean(target_entity_score)} ± {std(target_entity_score)}, best: {mean(best_entity_score)} ± {std(best_entity_score)}, rank: {mean(target_entity_rank)} ± {std(target_entity_rank)}')
-        return mean(target_entity_score), mean(best_entity_score), mean(target_entity_rank), mean_of_tensor_list(delta_embeddings)
-    
-    def pt_training_addition(self):
-        logger.info(f'[pt_training_addition] {len(self.pt_train_samples)}/{len(self.original_train_samples)} samples, {hyperparameters[RETRAIN_EPOCHS]} epoches')
-        return self.post_training_save(self.pt_train_samples, save_pt_train=True)
 
     def base_training_multiple(self):
         if self.base_identifier in self._base_pt_model_results:
@@ -651,18 +564,22 @@ class Explanation:
         results = []
         for i in range(MAX_POST_TRAIN_TIMES):
             results.append(self.post_training_save(training_samples))
-            # if len(results) > 1 and early_stop:
-            #     # if the CV of the score and rank is small enough, stop training
-            #     target_entity_score, _, target_entity_rank, _ = zip(*results)
-            #     if std(target_entity_score) / mean(target_entity_score) < 0.1 and std(target_entity_rank) / mean(target_entity_rank) < 0.1:
-            #         break
-            
-        embeddings = mean_of_tensor_list(results)
+            if len(results) > 1 and early_stop:
+                # if the CV of the score and rank is small enough, stop training
+                target_entity_score, \
+                best_entity_score, \
+                target_entity_rank = zip(*results)
+                if std(target_entity_score) / mean(target_entity_score) < 0.1 and std(target_entity_rank) / mean(target_entity_rank) < 0.1:
+                    break
+                
+                # if training set is too large, early stop training
+                if len(training_samples) > MAX_TRAINING_THRESH / 2:
+                    break
         target_entity_score, \
         best_entity_score, \
-        target_entity_rank = self.extract_detailed_performances_on_embeddings(embeddings)
-        logger.info(f'train {i+1} times, score: {target_entity_score}, best: {best_entity_score}, rank: {target_entity_rank}')
-        return mean(target_entity_score), mean(best_entity_score), mean(target_entity_rank), embeddings
+        target_entity_rank = zip(*results)
+        logger.info(f'train {i+1} times, score: {mean(target_entity_score)} ± {std(target_entity_score)}, best: {mean(best_entity_score)} ± {std(best_entity_score)}, rank: {mean(target_entity_rank)} ± {std(target_entity_rank)}')
+        return mean(target_entity_score), mean(best_entity_score), mean(target_entity_rank)
 
     def original_results(self) :
         sample = self.sample_to_explain
@@ -674,23 +591,17 @@ class Explanation:
         return self._original_model_results[sample]
 
     
-    def get_init_tensor(self):
-        if self.sharing:
-            init_tensor = base_identifier2trainable_entities_embedding[self.base_identifier]
-            # IMPORTANT: initialize trainable_entities_embedding
-        else:
-            init_tensor = model.entity_embeddings[self.trainable_entities].clone().detach()
-            init_tensor += self.kelpie_init_tensor
-            # init_tensor = self.kelpie_init_tensor
-        return init_tensor
-
-    
-    def post_training_save(self, post_train_samples: numpy.array=[], **para):
+    def post_training_save(self, post_train_samples: numpy.array=[], save: bool=False):
         new_model = TargetModel(dataset=dataset, hyperparameters=hyperparameters)
         new_model.load_state_dict(state_dict=args.state_dict)
         new_model = new_model.to('cuda')
+
+        if self.sharing and not save:
+            init_tensor = base_identifier2trainable_entities_embedding[self.base_identifier]
+            # IMPORTANT: initialize trainable_entities_embedding
+        else:
+            init_tensor = self.kelpie_init_tensor
         
-        init_tensor = self.get_init_tensor()
         # if len(post_train_samples) == 0:
         #     return extract_detailed_performances(new_model, self.sample_to_explain)
 
@@ -716,43 +627,23 @@ class Explanation:
             # Now you can do your training. Only the entity_embeddings for self.head will get updated...
             optimizer = Optimizer(model=new_model, hyperparameters=hyperparameters, verbose=False)
             optimizer.epochs = hyperparameters[RETRAIN_EPOCHS]
-            if 'epoches' in para:
-                optimizer.epochs = para['epoches']
-            if 'lr' in para:
-                optimizer.learning_rate = para['lr']
-            
             # optimizer.learning_rate *= 10
 
             # print('original, post_train = ', len(original_train_samples), len(post_train_samples))
             optimizer.train(train_samples=post_train_samples, post_train=True)
         
-        logger.info('after embedding %s', tensor_head(new_model.trainable_entity_embeddings[0]))
-        # print('weight', tensor_head(new_model.convolutional_layer.weight))
-        # print('other embedding', tensor_head(new_model.entity_embeddings[self.head+1]))
-
-        # ret = extract_detailed_performances(new_model, self.sample_to_explain)
+        ret = extract_detailed_performances(new_model, self.sample_to_explain)
         # print('pt', ret)
 
-        # delta_embedding = new_model.trainable_entity_embeddings.clone().detach() - init_tensor
-        # return *ret, delta_embedding,   # (#trainable_entities, #embedding_dim)
-        return new_model.trainable_entity_embeddings.clone().detach()
+        # print('weight', tensor_head(new_model.convolutional_layer.weight))
+        logger.info('after embedding %s', tensor_head(new_model.trainable_entity_embeddings[0]))
+        # print('other embedding', tensor_head(new_model.entity_embeddings[self.head+1]))
+        
+        if save:
+            base_identifier2trainable_entities_embedding[self.base_identifier] = new_model.trainable_entity_embeddings.clone().detach()
 
+        return ret
 
-    def extract_detailed_performances_on_embeddings(self, embedding: torch.Tensor):
-        new_model = TargetModel(dataset=dataset, hyperparameters=hyperparameters)
-        new_model.load_state_dict(state_dict=args.state_dict)
-        new_model = new_model.to('cuda')
-        new_model.start_post_train(trainable_indices=self.trainable_entities, init_tensor=embedding) 
-
-        return extract_detailed_performances(new_model, self.sample_to_explain)
-    
-    def extract_grad(self, embedding: torch.Tensor):
-        new_model = TargetModel(dataset=dataset, hyperparameters=hyperparameters)
-        new_model.load_state_dict(state_dict=args.state_dict)
-        new_model = new_model.to('cuda')
-        new_model.start_post_train(trainable_indices=self.trainable_entities, init_tensor=embedding)
-        new_model.eval()
-        return new_model.calculate_grad(self.sample_to_explain)
     
 
 from prefilters.prefilter import PreFilter
@@ -768,7 +659,7 @@ class DividePrefilter(PreFilter):
     Args:
         PreFilter (_type_): _description_
     """
-    df = pd.DataFrame()
+    df = pd.DataFrame(columns=['sample_to_explain', 'identifier', 'length', 'r1', 'r2', 'relevance'])
     def __init__(self,
                  model: Model,
                  dataset: Dataset):
@@ -890,14 +781,15 @@ class DividePrefilter(PreFilter):
         if group2_explanation.is_valid():
             valid_groups.append(group2_explanation)
 
-        update_df(self.df, {
+        self.df.loc[len(self.df)] = {
             'sample_to_explain': exp.sample_to_explain,
             'identifier': exp.identifier,
             'length': len(exp.samples_to_remove),
             'r1': group1_explanation.relevance,
             'r2': group2_explanation.relevance,
             'relevance': exp.relevance
-        }, 'divide_prefilter.csv')
+        }
+        self.df.to_csv(f'{args.output_folder}/divide_prefilter.csv')
 
         return valid_groups
     
@@ -921,131 +813,75 @@ class NumpyEncoder(json.JSONEncoder):
 
 class Path:
     paths = []
-    rel_df = pd.DataFrame()
+    rel_df = pd.DataFrame(columns=['prediction', 'relevance', 'triples', 'all_rel'])
 
-    def __init__(self, sample_to_explain, path) -> None:
-        """Constructor for Path
+    @staticmethod
+    def build(sample_to_explain, triples):
+        """build a path on scratch
 
         Args:
-            sample_to_explain (_type_): _description_
-            path (_type_): a list of triples connecting head and tail. The triples should be in the same order as the path
+            triples (_type_): _description_
         """
-        self.sample_to_explain = sample_to_explain
-        self.path = path
-        self.path_entities = self.get_path_entities()
+        head, rel, tail = sample_to_explain
+        last_entity = sample_to_explain[0]
+        path_entities = [last_entity]
+        for triple in triples:
+            target = triple[2] if triple[0] == last_entity else triple[0]
+            path_entities.append(target)
+            last_entity = target
 
-        head, rel, tail = self.sample_to_explain
-        all_triples = set()
-        for entitiy in self.path_entities:
-            all_triples.update(args.available_samples[entitiy])
-        first_last_hop_triples = set()
-        for entitiy in [head, tail]:
-            first_last_hop_triples.update(args.available_samples[entitiy])
+        explanations = []
+        for ix, entitiy in enumerate(path_entities[:-1]):
+            incomplete_path_entities = path_entities[:ix+1]
+            all_paths = dataset.find_all_path_within_k_hop(entitiy, tail, k=MAX_PATH_LENGTH - len(incomplete_path_entities) + 1, \
+                                                           forbidden_entities=incomplete_path_entities)
+            
+            next_triples = set([tuple(path[0]) for path in all_paths])
+            logger.info(f'latent triples({len(next_triples)}) in path({len(all_paths)}): {next_triples}')
+            base_identifier2next_triples[(tuple(sample_to_explain), tuple(incomplete_path_entities))] = next_triples
 
-        base_identifier2next_triples[(tuple(self.sample_to_explain), tuple(self.path_entities))] = all_triples
-        base_identifier2next_triples[(tuple(self.sample_to_explain), tuple([head]))] = args.available_samples[head]
-        base_identifier2next_triples[(tuple(self.sample_to_explain), tuple([tail]))] = args.available_samples[tail]
-        base_identifier2next_triples[(tuple(self.sample_to_explain), tuple([head, tail]))] = first_last_hop_triples
+            explanations.append(Explanation.build(sample_to_explain, [triples[ix]], incomplete_path_entities))
 
-        self.build_explanations()
-        self.explanations = [self.first_hop_exp, self.last_hop_exp, self.path_exp, self.real_exp]
+        return Path(triples, explanations)
 
-        logger.info(f'path relevance: {[exp.relevance for exp in self.explanations if exp is not None]}')
 
-        self.save_to_local()
+    def __init__(self, triples, explanations) -> None:
+        logger.info(f'constructing path with triples {str(triples)}')
+        self.triples = triples
+        self.sample_to_explain = explanations[0].sample_to_explain
+        self.explanations = explanations
+        self.triple2explanation = {triple: explanation for triple, explanation in zip(triples, explanations)}
+        
+        self.path_explanation = Explanation.build(self.sample_to_explain, triples, explanations[-1].trainable_entities, sharing=True)
+        self.relevance = self.path_explanation.relevance
 
-    @property
-    def triples(self):
-        return self.path
+        self.path_explanation.paths.append(self)
 
-    def save_to_local(self):
-        self.paths.append(self)
-        self.ret = {
-            'prediction': self.sample_to_explain,
-            'path': self.path,
-            'head_rel': self.first_hop_exp.relevance,
-            'tail_rel': self.last_hop_exp.relevance,
-            'rel': self.path_exp.relevance,
-            'real_rel': self.real_exp.relevance if CALCULATE_REAL_REL else None,
-        }
-        for p in [1, 2, float('inf')]:
-            self.ret.update({
-                f'delta_h_{p}': self.first_hop_exp.ret[f'delta_{p}'],
-                f'delta_t_{p}': self.last_hop_exp.ret[f'delta_{p}'],
-                f'delta_{p}': self.path_exp.ret[f'delta_{p}'],
-                f'delta_real_{p}': self.real_exp.ret[f'delta_{p}'] if CALCULATE_REAL_REL else None,
-                f'partial_{p}': self.path_exp.ret[f'partial_{p}'],
-                f'partial_t_{p}': self.path_exp.ret[f'partial_t_{p}'],
-                f'partial_h_{p}': self.path_exp.ret[f'partial_h_{p}']
-            })
-        update_df(self.rel_df, self.ret,'rel_df.csv')
-
-        lis = [path.json() for path in self.paths]
+        logger.info(f'path relevance: {[exp.relevance for exp in self.explanations]} {self.relevance}')
+        Path.paths.append(self)
+        lis = [path.json() for path in Path.paths]
         with open(f'{args.output_folder}/paths.json', 'w') as f:
             json.dump(lis, f, cls=NumpyEncoder, indent=4)
 
-    def get_path_entities(self):
-        return get_path_entities(self.sample_to_explain, self.path)
-
-    def build_explanations(self):
-        head, rel, tail = self.sample_to_explain
-        self.first_hop_exp = Explanation.build(self.sample_to_explain, [self.path[0]], [head])
-        self.last_hop_exp = Explanation.build(self.sample_to_explain, [self.path[-1]], [tail])
-        self.path_exp = Explanation.build(self.sample_to_explain, [self.path[0], self.path[-1]], [head, tail])
-        self.real_exp = Explanation.build(self.sample_to_explain, self.path, self.path_entities) if CALCULATE_REAL_REL else None
+        Path.rel_df.loc[len(Path.rel_df)] = {
+            'prediction': self.sample_to_explain,
+            'relevance': self.relevance,
+            'triples': self.triples,
+            'all_rel': [exp.relevance for exp in self.explanations]
+        }
+        Path.rel_df.to_csv(f'{args.output_folder}/rel_df.csv')
+    
 
     def json(self):
         return {
-            'sample_to_explain': self.sample_to_explain,
+            'sample_to_explain': self.explanations[0].ret['sample_to_explain'],
             'facts': [dataset.sample_to_fact(triple, True) for triple in self.triples],
-            'path': self.path,
-            'first_hop_exp': self.first_hop_exp.ret,
-            'last_hop_exp': self.last_hop_exp.ret,
-            'path_exp': self.path_exp.ret,
-            'real_exp': self.real_exp.ret if CALCULATE_REAL_REL else None,
-            'relevance': [exp.relevance for exp in self.explanations if exp is not None],
-            'ret': self.ret
+            'triples': self.triples,
+            'explanations': [exp.ret for exp in self.explanations],
+            'path_explanation': self.path_explanation.ret,
+            'relevance': self.relevance
         }
         
-
-class SuperPath(Path):
-    def __init__(self, sample_to_explain, path) -> None:
-        super().__init__(sample_to_explain, path)
-
-    def get_path_entities(self):
-        return self.path
-
-    @property
-    def triples(self):
-        return self.all_samples
-
-    def build_explanations(self):
-        head, rel, tail = self.sample_to_explain
-        first_hop = self.path[1]
-        last_hop = self.path[-2]
-        print('Constructing super path:  first_hop', first_hop, 'last_hop', last_hop, 'tail', tail)
-        print('last_hop samples', len(args.available_samples[last_hop]), list(args.available_samples[last_hop])[:10])
-        print('tail samples', len(args.available_samples[tail]), list(args.available_samples[tail])[:10])
-        
-        first_hop_samples = list(args.available_samples[head] & args.available_samples[first_hop])
-        last_hop_samples = list(args.available_samples[tail] & args.available_samples[last_hop])
-
-        for sample in last_hop_samples:
-            print(sample, tail, last_hop)
-            assert sample[0] in [tail, last_hop] and sample[2] in [tail, last_hop]
-
-        self.all_samples = set()
-        for i in range(len(self.path)-1):
-            entity = self.path[i]
-            for triple in args.available_samples[entity]:
-                if self.path[i+1] in [triple[0], triple[2]]:
-                    self.all_samples.add(triple)
-
-        self.first_hop_exp = Explanation.build(self.sample_to_explain, first_hop_samples, [head])
-        self.last_hop_exp = Explanation.build(self.sample_to_explain, last_hop_samples, [tail])
-        self.path_exp = Explanation.build(self.sample_to_explain, first_hop_samples + last_hop_samples, [head, tail])
-        self.real_exp = Explanation.build(self.sample_to_explain, list(self.all_samples), self.path) if CALCULATE_REAL_REL else None
-
 
 class Xrule:
     def __init__(self,
