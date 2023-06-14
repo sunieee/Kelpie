@@ -35,6 +35,8 @@ from typing import List, Dict, Tuple, Union, Optional
 from kelpie_dataset import KelpieDataset
 import warnings
 
+import scipy.stats as stats
+
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.optim")
 
 parser = argparse.ArgumentParser(description="Model-agnostic tool for explaining link predictions")
@@ -141,8 +143,19 @@ parser.add_argument('--relevance_method', type=str, default='kelpie',
 
 args = parser.parse_args()
 cfg = config[args.dataset][args.method]
+coef = cfg['coef']
 args.restrain_dic = config[args.dataset].get('tail_restrain', None)
+# print(cfg)
 
+rv_dic = {}
+for rv_name in coef:
+    rv_para = coef[rv_name]
+    # create a t distribution with df = rv_para[0], loc = rv_para[1], scale = rv_para[2]
+    rv_dic[rv_name] = stats.t(df=rv_para[0], loc=rv_para[1], scale=rv_para[2])
+print('rv distribution dic:', rv_dic)
+os.makedirs(f'{args.output_folder}/hyperpath', exist_ok=True)
+os.makedirs(f'{args.output_folder}/head', exist_ok=True)
+os.makedirs(f'{args.output_folder}/tail', exist_ok=True)
 
 # deterministic!
 seed = 42
@@ -265,6 +278,7 @@ BASE_ADDITION_ON_PT = False
 CALCULATE_REAL_REL = False
 MAX_EMBEDDING_DIFF_L2 = 0.1
 NORMALIZE_DIFF = False
+MAX_GROUP_CNT = 3
 
 
 if isinstance(model, ComplEx):
@@ -304,7 +318,7 @@ def get_removel_relevance(rank_delta, score_delta):
         relevance = np.tanh(rank_delta) + np.tanh(score_delta)
     return rd(relevance)
 
-def extract_detailed_performances(model: Model, sample: numpy.array):
+def extract_performances(model: Model, sample: numpy.array):
     model.eval()
     head_id, relation_id, tail_id = sample
 
@@ -332,6 +346,17 @@ def extract_detailed_performances(model: Model, sample: numpy.array):
 
     return rd(target_entity_score), rd(best_entity_score), target_entity_rank
 
+def extract_performances_on_embeddings(trainable_entities, embedding: torch.Tensor, prediction: numpy.array, grad:bool=False):
+    new_model = TargetModel(dataset=dataset, hyperparameters=hyperparameters)
+    new_model.load_state_dict(state_dict=args.state_dict)
+    new_model = new_model.to('cuda')
+    new_model.start_post_train(trainable_indices=trainable_entities, init_tensor=embedding)
+    if grad:
+        new_model.eval()
+        return new_model.calculate_grad(prediction)
+    return extract_performances(new_model, prediction)
+
+
 def extract_samples_with_entity(samples, entity_id):
     return samples[numpy.where(numpy.logical_or(samples[:, 0] == entity_id, samples[:, 2] == entity_id))]
 
@@ -351,13 +376,13 @@ def unfold(lis):
     if isinstance(lis, torch.Tensor):
         lis = lis.tolist()
     if not hasattr(lis, '__iter__'):
-        return lis
+        return rd(lis)
     if len(lis) == 1:
         return unfold(lis[0])
-    return lis
+    return [rd(x) for x in lis]
 
-def get_path_entities(sample_to_explain, path):
-    last_entity_on_path = sample_to_explain[0]
+def get_path_entities(prediction, path):
+    last_entity_on_path = prediction[0]
     path_entities = [last_entity_on_path]
     for triple in path:
         target = triple[2] if triple[0] == last_entity_on_path else triple[0]
@@ -371,6 +396,32 @@ def update_df(df, dic, save_path):
     df.loc[len(df)] = dic
     df.to_csv(f'{args.output_folder}/{save_path}', index=False)
 
+
+def overlapping_block_division(neighbors, m):
+    n = len(neighbors)
+    k = math.ceil(math.log(n, m))
+    N = m ** k
+    cnt = n // m
+    print(f"n: {n}, m: {m}, k: {k}, N: {N}, cnt: {cnt}")
+
+    group_id_to_elements = {}
+    element_id_to_groups = defaultdict(list)
+
+    # fill neighbors with -1 until it has N elements
+    neighbors += [-1] * (N - n)
+    # create a k-dim matrix with m elements in each dimension, and fill it with the elements in neighbors
+    matrix = np.array(neighbors).reshape((m,) * k)
+
+    for i in range(k):
+        # get m slices from the i-th dimension and store them in a list(group), group_id = m * i + j
+        for j in range(m):
+            group = matrix.take(j, axis=i).flatten()
+            group_id = m * i + j
+            group_id_to_elements[group_id] = [element for element in group if element != -1]
+            for element in group_id_to_elements[group_id]:
+                element_id_to_groups[element].append(group_id)
+
+    return group_id_to_elements, element_id_to_groups
 
 identifier2explanations = defaultdict(list)
 base_identifier2next_triples = defaultdict(set)
@@ -388,7 +439,7 @@ class Explanation:
         compute the relevance of the samples in removal, that is, an estimate of the effect they would have
         if removed (all together) from the perspective entity to worsen the prediction of the sample to convert.
 
-        :param sample_to_explain: the sample that we would like the model to predict as "true",
+        :param prediction: the sample that we would like the model to predict as "true",
                                     in the form of a tuple (head, relation, tail)
         :param samples_to_remove:   the list of samples containing the perspective entity
                                     that we want to analyze the effect of, if added to the perspective entity
@@ -473,7 +524,7 @@ class Explanation:
                 results.append(self.post_training_save(np.stack(list(share_train_samples), axis=0)))
             base_identifier2trainable_entities_embedding[self.base_identifier] = mean_of_tensor_list(results)
             self.sharing = True
-            target_entity_score, best_entity_score, target_entity_rank = self.extract_detailed_performances_on_embeddings(base_identifier2trainable_entities_embedding[self.base_identifier])
+            target_entity_score, best_entity_score, target_entity_rank = self.extract_performances_on_embeddings(base_identifier2trainable_entities_embedding[self.base_identifier])
             logger.info(f'[post-training on share] target_entity_score: {target_entity_score}, best_entity_score: {best_entity_score}, target_entity_rank: {target_entity_rank}')
             
 
@@ -486,10 +537,10 @@ class Explanation:
         # self.empty_samples = np.delete(self.original_train_samples, list(range(len(self.original_train_samples))), axis=0)
 
     @staticmethod
-    def build(sample_to_explain: Tuple[Any, Any, Any],
+    def build(prediction: Tuple[Any, Any, Any],
                  samples_to_remove: List[Tuple],
                  trainable_entities: List=None, sharing: bool=True):
-        explanation = Explanation(sample_to_explain, samples_to_remove, trainable_entities, sharing)
+        explanation = Explanation(prediction, samples_to_remove, trainable_entities, sharing)
         if explanation.identifier in identifier2explanations:
             return identifier2explanations[explanation.identifier]
 
@@ -503,28 +554,28 @@ class Explanation:
         return explanation
 
     def __init__(self, 
-                 sample_to_explain: Tuple[Any, Any, Any],
+                 prediction: Tuple[Any, Any, Any],
                  samples_to_remove: List[Tuple],
                  trainable_entities: List=None, sharing: bool=True) -> None:
-        logger.info("Create Explanation on sample: %s, removing: %s", sample_to_explain, samples_to_remove)
+        logger.info("Create Explanation on sample: %s, removing: %s", prediction, samples_to_remove)
         # logger.info("Removing sample: %s", [dataset.sample_to_fact(x, True) for x in samples_to_remove])
         # for entity_id, samples in samples_to_remove.items():
         #     print("Entity:", dataset.entity_id_to_name(entity_id), "Samples:", [dataset.sample_to_fact(x, True) for x in samples])
 
-        self.sample_to_explain = sample_to_explain
+        self.prediction = prediction
         self.samples_to_remove = samples_to_remove
         if trainable_entities is None:
-            trainable_entities = [sample_to_explain[0]]
+            trainable_entities = [prediction[0]]
 
-        self.head = sample_to_explain[0]
+        self.head = prediction[0]
         # trainable_entities.sort()   # WE SHOULD NOT SORT HERE, BECAUSE THE ORDER OF TRAINABLE ENTITIES MATTERS
         self.trainable_entities = trainable_entities
         self.kelpie_init_tensor = self._get_kelpie_init_tensor()
-        self.base_identifier = (tuple(self.sample_to_explain), tuple(self.trainable_entities))
+        self.base_identifier = (tuple(self.prediction), tuple(self.trainable_entities))
 
         samples_to_remove.sort()
         self.remove_hash = sum([hash(x) for x in samples_to_remove])
-        self.identifier = (tuple(self.sample_to_explain), tuple(self.trainable_entities), self.remove_hash)
+        self.identifier = (tuple(self.prediction), tuple(self.trainable_entities), self.remove_hash)
         
         logger.info('extracting training samples...')
         self.sharing = sharing
@@ -532,7 +583,7 @@ class Explanation:
             self._extract_training_samples_sharing_others()
         else:
             self._extract_training_samples()
-        # self.identifier = (tuple(self.sample_to_explain), tuple(self.trainable_entities), tuple(self.ids))
+        # self.identifier = (tuple(self.prediction), tuple(self.trainable_entities), tuple(self.ids))
         self.paths = []    # only path (simple/compound) explanation has path
         
 
@@ -580,19 +631,23 @@ class Explanation:
             pt_embeddings = base_embeddings + diff
             pt_target_entity_score, \
             pt_best_entity_score, \
-            pt_target_entity_rank = self.extract_detailed_performances_on_embeddings(pt_embeddings)
+            pt_target_entity_rank = self.extract_performances_on_embeddings(pt_embeddings)
         # logger.info(f"Explanation created. Rank worsening: {rank_worsening}, score worsening: {score_worsening}")
-            
+        
         rank_worsening = pt_target_entity_rank - base_target_entity_rank
         score_worsening = base_target_entity_score - pt_target_entity_score
         if model.is_minimizer():
             score_worsening *= -1
 
+        self.pt_embeddings = pt_embeddings
+        self.base_score = base_target_entity_score
+        self.pt_score = pt_target_entity_score
+
         # calculate the gradient using the average of the two embeddings
-        self.grad = self.extract_grad((pt_embeddings + base_embeddings) / 2)
+        self.grad = self.extract_performances_on_embeddings((pt_embeddings + base_embeddings) / 2, True)
 
         self.relevance = get_removel_relevance(rank_worsening, score_worsening)
-        self.ret = {'sample_to_explain': dataset.sample_to_fact(self.sample_to_explain, True),
+        self.ret = {'prediction': dataset.sample_to_fact(self.prediction, True),
                 'identifier': self.identifier,
                 # 'samples_to_remove': self.samples_to_remove,
                 'length': len(self.samples_to_remove),
@@ -660,16 +715,16 @@ class Explanation:
         embeddings = mean_of_tensor_list(results)
         target_entity_score, \
         best_entity_score, \
-        target_entity_rank = self.extract_detailed_performances_on_embeddings(embeddings)
+        target_entity_rank = self.extract_performances_on_embeddings(embeddings)
         logger.info(f'train {i+1} times, score: {target_entity_score}, best: {best_entity_score}, rank: {target_entity_rank}')
         return mean(target_entity_score), mean(best_entity_score), mean(target_entity_rank), embeddings
 
     def original_results(self) :
-        sample = self.sample_to_explain
+        sample = self.prediction
         if not sample in self._original_model_results:
             target_entity_score, \
             best_entity_score, \
-            target_entity_rank = extract_detailed_performances(model, sample)
+            target_entity_rank = extract_performances(model, sample)
             self._original_model_results[sample] = (target_entity_score, best_entity_score, target_entity_rank)
         return self._original_model_results[sample]
 
@@ -692,7 +747,7 @@ class Explanation:
         
         init_tensor = self.get_init_tensor()
         # if len(post_train_samples) == 0:
-        #     return extract_detailed_performances(new_model, self.sample_to_explain)
+        #     return extract_performances(new_model, self.prediction)
 
         for param in new_model.parameters():
             if param.is_leaf:
@@ -707,9 +762,9 @@ class Explanation:
 
         new_model.start_post_train(trainable_indices=self.trainable_entities, init_tensor=init_tensor)   
 
-        # print('origin', extract_detailed_performances(new_model, self.sample_to_explain))
+        # print('origin', extract_performances(new_model, self.prediction))
         # print('weight', tensor_head(new_model.convolutional_layer.weight))
-        logger.info('before embedding %s', tensor_head(new_model.trainable_entity_embeddings[0]))
+        print('before embedding %s', tensor_head(new_model.trainable_entity_embeddings[0]))
         # print('other embedding', tensor_head(new_model.entity_embeddings[self.head+1]))
 
         if len(post_train_samples):
@@ -726,35 +781,21 @@ class Explanation:
             # print('original, post_train = ', len(original_train_samples), len(post_train_samples))
             optimizer.train(train_samples=post_train_samples, post_train=True)
         
-        logger.info('after embedding %s', tensor_head(new_model.trainable_entity_embeddings[0]))
+        print('after embedding %s', tensor_head(new_model.trainable_entity_embeddings[0]))
         # print('weight', tensor_head(new_model.convolutional_layer.weight))
         # print('other embedding', tensor_head(new_model.entity_embeddings[self.head+1]))
 
-        # ret = extract_detailed_performances(new_model, self.sample_to_explain)
+        # ret = extract_performances(new_model, self.prediction)
         # print('pt', ret)
 
         # delta_embedding = new_model.trainable_entity_embeddings.clone().detach() - init_tensor
         # return *ret, delta_embedding,   # (#trainable_entities, #embedding_dim)
         return new_model.trainable_entity_embeddings.clone().detach()
-
-
-    def extract_detailed_performances_on_embeddings(self, embedding: torch.Tensor):
-        new_model = TargetModel(dataset=dataset, hyperparameters=hyperparameters)
-        new_model.load_state_dict(state_dict=args.state_dict)
-        new_model = new_model.to('cuda')
-        new_model.start_post_train(trainable_indices=self.trainable_entities, init_tensor=embedding) 
-
-        return extract_detailed_performances(new_model, self.sample_to_explain)
     
-    def extract_grad(self, embedding: torch.Tensor):
-        new_model = TargetModel(dataset=dataset, hyperparameters=hyperparameters)
-        new_model.load_state_dict(state_dict=args.state_dict)
-        new_model = new_model.to('cuda')
-        new_model.start_post_train(trainable_indices=self.trainable_entities, init_tensor=embedding)
-        new_model.eval()
-        return new_model.calculate_grad(self.sample_to_explain)
+    def extract_performances_on_embeddings(self, embedding: torch.Tensor, grad:bool = False):
+        return extract_performances_on_embeddings(self.trainable_entities, embedding, self.prediction, grad)
     
-
+    
 from prefilters.prefilter import PreFilter
 import threading
 from multiprocessing.pool import ThreadPool as Pool
@@ -793,7 +834,7 @@ class DividePrefilter(PreFilter):
         k = len(incomplete_path_entities)
 
         Args:
-            sample_to_explain (Tuple[Any, Any, Any]): _description_
+            prediction (Tuple[Any, Any, Any]): _description_
             incomplete_path_entities (List, optional): entities on the incomplete path. Starts with head.
             top_N (int, optional): _description_. Defaults to 20.
 
@@ -881,8 +922,8 @@ class DividePrefilter(PreFilter):
         print('group1', len(group1), group1)
         print('group2', len(group2), group2)
 
-        group1_explanation = Explanation.build(exp.sample_to_explain, group1, exp.trainable_entities)
-        group2_explanation = Explanation.build(exp.sample_to_explain, group2, exp.trainable_entities)
+        group1_explanation = Explanation.build(exp.prediction, group1, exp.trainable_entities)
+        group2_explanation = Explanation.build(exp.prediction, group2, exp.trainable_entities)
 
         valid_groups = []
         if group1_explanation.is_valid():
@@ -891,7 +932,7 @@ class DividePrefilter(PreFilter):
             valid_groups.append(group2_explanation)
 
         update_df(self.df, {
-            'sample_to_explain': exp.sample_to_explain,
+            'prediction': exp.prediction,
             'identifier': exp.identifier,
             'length': len(exp.samples_to_remove),
             'r1': group1_explanation.relevance,
@@ -923,18 +964,18 @@ class Path:
     paths = []
     rel_df = pd.DataFrame()
 
-    def __init__(self, sample_to_explain, path) -> None:
+    def __init__(self, prediction, path) -> None:
         """Constructor for Path
 
         Args:
-            sample_to_explain (_type_): _description_
+            prediction (_type_): _description_
             path (_type_): a list of triples connecting head and tail. The triples should be in the same order as the path
         """
-        self.sample_to_explain = sample_to_explain
+        self.prediction = prediction
         self.path = path
         self.path_entities = self.get_path_entities()
 
-        head, rel, tail = self.sample_to_explain
+        head, rel, tail = self.prediction
         all_triples = set()
         for entitiy in self.path_entities:
             all_triples.update(args.available_samples[entitiy])
@@ -942,10 +983,10 @@ class Path:
         for entitiy in [head, tail]:
             first_last_hop_triples.update(args.available_samples[entitiy])
 
-        base_identifier2next_triples[(tuple(self.sample_to_explain), tuple(self.path_entities))] = all_triples
-        base_identifier2next_triples[(tuple(self.sample_to_explain), tuple([head]))] = args.available_samples[head]
-        base_identifier2next_triples[(tuple(self.sample_to_explain), tuple([tail]))] = args.available_samples[tail]
-        base_identifier2next_triples[(tuple(self.sample_to_explain), tuple([head, tail]))] = first_last_hop_triples
+        base_identifier2next_triples[(tuple(self.prediction), tuple(self.path_entities))] = all_triples
+        base_identifier2next_triples[(tuple(self.prediction), tuple([head]))] = args.available_samples[head]
+        base_identifier2next_triples[(tuple(self.prediction), tuple([tail]))] = args.available_samples[tail]
+        base_identifier2next_triples[(tuple(self.prediction), tuple([head, tail]))] = first_last_hop_triples
 
         self.build_explanations()
         self.explanations = [self.first_hop_exp, self.last_hop_exp, self.path_exp, self.real_exp]
@@ -961,7 +1002,7 @@ class Path:
     def save_to_local(self):
         self.paths.append(self)
         self.ret = {
-            'prediction': self.sample_to_explain,
+            'prediction': self.prediction,
             'path': self.path,
             'head_rel': self.first_hop_exp.relevance,
             'tail_rel': self.last_hop_exp.relevance,
@@ -985,18 +1026,18 @@ class Path:
             json.dump(lis, f, cls=NumpyEncoder, indent=4)
 
     def get_path_entities(self):
-        return get_path_entities(self.sample_to_explain, self.path)
+        return get_path_entities(self.prediction, self.path)
 
     def build_explanations(self):
-        head, rel, tail = self.sample_to_explain
-        self.first_hop_exp = Explanation.build(self.sample_to_explain, [self.path[0]], [head])
-        self.last_hop_exp = Explanation.build(self.sample_to_explain, [self.path[-1]], [tail])
-        self.path_exp = Explanation.build(self.sample_to_explain, [self.path[0], self.path[-1]], [head, tail])
-        self.real_exp = Explanation.build(self.sample_to_explain, self.path, self.path_entities) if CALCULATE_REAL_REL else None
+        head, rel, tail = self.prediction
+        self.first_hop_exp = Explanation.build(self.prediction, [self.path[0]], [head])
+        self.last_hop_exp = Explanation.build(self.prediction, [self.path[-1]], [tail])
+        self.path_exp = Explanation.build(self.prediction, [self.path[0], self.path[-1]], [head, tail])
+        self.real_exp = Explanation.build(self.prediction, self.path, self.path_entities) if CALCULATE_REAL_REL else None
 
     def json(self):
         return {
-            'sample_to_explain': self.sample_to_explain,
+            'prediction': self.prediction,
             'facts': [dataset.sample_to_fact(triple, True) for triple in self.triples],
             'path': self.path,
             'first_hop_exp': self.first_hop_exp.ret,
@@ -1009,8 +1050,8 @@ class Path:
         
 
 class SuperPath(Path):
-    def __init__(self, sample_to_explain, path) -> None:
-        super().__init__(sample_to_explain, path)
+    def __init__(self, prediction, path) -> None:
+        super().__init__(prediction, path)
 
     def get_path_entities(self):
         return self.path
@@ -1020,7 +1061,7 @@ class SuperPath(Path):
         return self.all_samples
 
     def build_explanations(self):
-        head, rel, tail = self.sample_to_explain
+        head, rel, tail = self.prediction
         first_hop = self.path[1]
         last_hop = self.path[-2]
         print('Constructing super path:  first_hop', first_hop, 'last_hop', last_hop, 'tail', tail)
@@ -1041,10 +1082,10 @@ class SuperPath(Path):
                 if self.path[i+1] in [triple[0], triple[2]]:
                     self.all_samples.add(triple)
 
-        self.first_hop_exp = Explanation.build(self.sample_to_explain, first_hop_samples, [head])
-        self.last_hop_exp = Explanation.build(self.sample_to_explain, last_hop_samples, [tail])
-        self.path_exp = Explanation.build(self.sample_to_explain, first_hop_samples + last_hop_samples, [head, tail])
-        self.real_exp = Explanation.build(self.sample_to_explain, list(self.all_samples), self.path) if CALCULATE_REAL_REL else None
+        self.first_hop_exp = Explanation.build(self.prediction, first_hop_samples, [head])
+        self.last_hop_exp = Explanation.build(self.prediction, last_hop_samples, [tail])
+        self.path_exp = Explanation.build(self.prediction, first_hop_samples + last_hop_samples, [head, tail])
+        self.real_exp = Explanation.build(self.prediction, list(self.all_samples), self.path) if CALCULATE_REAL_REL else None
 
 
 class Xrule:
@@ -1057,14 +1098,14 @@ class Xrule:
         self.prefilter = DividePrefilter(model, dataset)
 
     def explain_necessary(self,
-                          sample_to_explain: Tuple[Any, Any, Any]):
+                          prediction: Tuple[Any, Any, Any]):
         """This method extracts necessary explanations for a specific sample
 
         Args:
-            sample_to_explain (Tuple[Any, Any, Any]): _description_
+            prediction (Tuple[Any, Any, Any]): _description_
         """
-        h, r, t = sample_to_explain
-        return self.get_k_hop_path(sample_to_explain)
+        h, r, t = prediction
+        return self.get_k_hop_path(prediction)
     
     def get_k_hop_path(self, prediction, incomplete_path_entities=None, last_sample=[], last_exp=[]):
         """This method extracts necessary paths for a specific sample, k <= hops <= MAX_PATH_LENGTH
@@ -1074,7 +1115,7 @@ class Xrule:
         len(incomplete_path_entities)=2 => three_hop_path
 
         Args:
-            sample_to_explain (_type_): _description_
+            prediction (_type_): _description_
             incomplete_path_entities (list, optional): _description_. Defaults to [].
         """
         h, r, t = prediction
@@ -1149,7 +1190,7 @@ class Combination:
         """find top_N combination of explanations 
 
         Args:
-            sample_to_explain (Tuple[Any, Any, Any]): _description_
+            prediction (Tuple[Any, Any, Any]): _description_
         """
         all_explanations = []
         all_explanations.extend(self.explanations)
@@ -1182,7 +1223,7 @@ class Combination:
         """find all combination of explanations 
 
         Args:
-            sample_to_explain (Tuple[Any, Any, Any]): _description_
+            prediction (Tuple[Any, Any, Any]): _description_
         """
         logger.info(f"{'*'*k} building compound explanations({k})")
         all_possible_combinations = list(itertools.combinations(self.explanations, k))
@@ -1210,7 +1251,7 @@ class Combination:
             paths = []
             for exp in combination:
                 paths.extend(exp.paths)
-            explanation = Explanation.build(combination[0].sample_to_explain, sample_to_remove, trainable_entities)
+            explanation = Explanation.build(combination[0].prediction, sample_to_remove, trainable_entities)
             explanation.paths = paths
 
             if not explanation.is_valid():
@@ -1234,3 +1275,245 @@ class Combination:
                 break
 
         return compound_explanations
+
+
+class OneHopGenerator:
+    df = pd.DataFrame()
+    def __init__(self, perspective, prediction, neighbors) -> None:
+        """For given perspective, generate top one hop explanation 
+        (1) k-dim cross partition
+        (2) select top valid probability ph/pt, calculate and yield explanation
+
+        Args:
+            perspective (stinr): 'head' or 'tail'
+            prediction (tuple): sample to explain
+            neighbors (list[int]): neighbors of the perspective entity
+        """
+        self.perspective = perspective
+        self.prediction = prediction
+        self.neighbors = neighbors
+        self.one_hop_explanations = {}
+        self.entity = prediction[0] if perspective == 'head' else prediction[2]
+
+        self.explanations = defaultdict(list)
+        
+        if len(neighbors) <= 20:
+            for neighbor in neighbors:
+                self.explanations[neighbor] = [self.calculate_group([neighbor])]
+            self.neighbors.sort(key=lambda x: self.explanations[x][0].relevance, reverse=True)
+            logger.info('==========no need to ODB==========')
+            for neighbor in self.neighbors:
+                logger.info(f'{neighbor}: {self.explanations[neighbor][0].relevance}')
+
+        else:
+            m = max(math.ceil(len(neighbors) / 50), 2)
+            group_id_to_elements, element_id_to_groups = overlapping_block_division(self.neighbors, m)
+
+            logger.info(f'==========need to ODB==========, n: {len(neighbors)}, m: {m}')
+
+            for group_id, group in group_id_to_elements.items():
+                exp = self.calculate_group(group)
+                exp.group_id = group_id
+                
+                for element_id in group:
+                    self.explanations[element_id].append(exp)
+                    
+            self.probability_dic = {}
+            self.neighbors.sort(key=lambda x: self.calculate_probability(x), reverse=True)
+
+            logger.info('==========ODB completed, probability==========')
+            for neighbor in self.neighbors:
+                logger.info(f'{neighbor}: {self.probability_dic[neighbor]}')
+    
+
+    def calculate_probability(self, neighbor):
+        """calculate valid probability of a list of explanations
+        P(R_hi>x) = P(xi-d_x * eta_h > x) * P(yi-d_y * eta_h > x) * ...
+                = P(eta_h < (xi-x)/d_x) * P(eta_h < (yi-x)/d_y) * ...
+                = Fh( (xi-x)/d_x ) * Fh( (yi-x)/d_y ) * ...
+        where Fh is the CDF of eta_h.
+
+        Returns:
+            float: valid probability
+        """
+        explanations = self.explanations[neighbor]
+        lab = self.persective[0]
+        ret = 1
+        for exp in explanations:
+            rel_group = exp.relevance
+            delta_group = exp.ret['delta_inf'] * exp.ret[f'parital_{lab}_all_inf']
+            point = (rel_group - DEFAULT_VALID_THRESHOLD) / delta_group
+            
+            ret *= rv_dic[f'eta_{lab}'].cdf(point)
+        
+        self.probability_dic[neighbor] = ret
+        return ret
+
+    def generate(self):
+        """return one top explanation
+        """
+        for neighbor in self.neighbors:
+            if neighbor in self.one_hop_explanations:
+                continue
+            if len(self.explanations[neighbor]) != 1:
+                exp = self.calculate_group([neighbor])
+            else:
+                exp = self.explanations[neighbor][0]
+            self.one_hop_explanations[neighbor] = exp
+
+            update_df(self.df, 
+                {
+                    'neighbor': neighbor,
+                    'entity': self.entity,
+                    'perspective': self.perspective,
+                    'prediction': self.prediction,
+                    'relevance': exp.relevance,
+                    'probability': self.probability_dic[neighbor],
+                    'rank': self.neighbors.index(neighbor)
+                }, f'{self.perspective}_explanations.csv')
+            
+            with open(f'{args.output_folder}/{self.perspective}/{self.prediction}.json', 'w') as f:
+                json.dump(self.json(), f, indent=4)
+            return neighbor, exp
+            
+        return None, None
+    
+    def json(self):
+        ret = {}
+        for neighbor, exp in self.one_hop_explanations.items():
+            ret[neighbor] = {
+                'neighbor': neighbor,
+                'entity': self.entity,
+                'relevance': exp.relevance,
+                'probability': self.probability_dic[neighbor],
+                'rank': self.neighbors.index(neighbor),
+                'exp': exp.json()
+            }
+        ret = sorted(ret.items(), key=lambda x: x[1]['relevance'], reverse=True)
+        return ret
+    
+    def calculate_group(self, group):
+        all_samples = set()
+        for neighbor in group:
+            all_samples |= args.available_samples[neighbor] & args.available_samples[self.entity]
+        return Explanation.build(self.prediction, list(all_samples), [self.entity])
+
+
+import queue
+class PathGenerator:
+    def __init__(self, prediction, hyperpaths) -> None:
+        self.prediction = prediction
+        self.hyperpaths = hyperpaths
+        self.path_explanations = {}
+        self.head_explanations = {}
+        self.tail_explanations = {}
+        self.head_hyperpaths = defaultdict(set)
+        self.tail_hyperpaths = defaultdict(set)
+
+        for hyperpath in hyperpaths:
+            self.head_hyperpaths[hyperpath[1]].add(hyperpath)
+            self.tail_hyperpaths[hyperpath[-2]].add(hyperpath)
+
+        self.queue = queue.PriorityQueue()
+        self.probability_dic = {}
+        self.approx_rel_dic = {}
+
+    def renew_head(self, head, explanation):
+        if head in self.head_explanations:
+            return
+        self.head_explanations[head] = explanation
+        for hyperpath in self.head_hyperpaths[head]:
+            if hyperpath[-2] in self.tail_explanations and hyperpath not in self.path_explanations:
+                self.add_to_queue(hyperpath)
+
+
+    def renew_tail(self, tail, explanation):
+        if tail in self.tail_explanations:
+            return
+        self.tail_explanations[tail] = explanation
+        for hyperpath in self.tail_hyperpaths[tail]:
+            if hyperpath[1] in self.head_explanations and hyperpath not in self.path_explanations:
+                self.add_to_queue(hyperpath)
+
+
+    def add_to_queue(self, hyperpath):
+        self.path_explanations[hyperpath] = 1   # wait to be calculated
+        prob = 1
+
+        head_exp = self.head_explanations[hyperpath[1]]
+        tail_exp = self.tail_explanations[hyperpath[-2]]
+        Delta_h = head_exp.ret['partial_t_inf'] * tail_exp.ret['delta_2']
+        Delta_t = tail_exp.ret['partial_h_inf'] * head_exp.ret['delta_2']
+        Delta = head_exp.ret['partial_inf'] * head_exp.ret['delta_2'] * tail_exp.ret['delta_2']
+
+        point = (DEFAULT_VALID_THRESHOLD - head_exp.relevance) / Delta_h
+        prob *= 1 - rv_dic['xi_h'].cdf(point)
+
+        point = (DEFAULT_VALID_THRESHOLD - tail_exp.relevance) / Delta_t
+        prob *= 1 - rv_dic['xi_t'].cdf(point)
+
+        point = (DEFAULT_VALID_THRESHOLD  - head_exp.relevance - tail_exp.relevance) / Delta
+        prob *= 1 - rv_dic['xi'].cdf(point)
+        
+        # sort hyperpath by probability in a descending order
+        self.queue.put((-prob, hyperpath))  
+        self.probability_dic[hyperpath] = prob
+
+
+    def generate(self):
+        if self.queue.empty():
+            return None, None
+        
+        neg_prob, hyperpath = self.queue.get()
+        head, relation, tail = self.prediction
+        head_exp = self.head_explanations[hyperpath[1]]
+        tail_exp = self.tail_explanations[hyperpath[-2]]
+        # approx_exp = Explanation.build(self.prediction, head_exp.samples_to_remove + tail_exp.samples_to_remove, [head, tail])
+        
+        all_samples_to_remove = set()
+        for i in range(len(hyperpath) - 1):
+            a = hyperpath[i]
+            b = hyperpath[i+1]
+            all_samples_to_remove |= args.available_samples[a] & args.available_samples[b]
+        real_exp = Explanation.build(self.prediction, list(all_samples_to_remove), list(hyperpath))
+        
+        # concat the first of head_exp.pt_embedding and the last of tail_exp.pt_embedding (pt_embedding is a tensor)
+        approx_embedding = torch.cat([head_exp.pt_embedding[0], tail_exp.pt_embedding[-1]], dim=0)
+        approx_score = extract_performances_on_embeddings([head,tail], approx_embedding, self.prediction)
+        logger.info(f'approx_score: {approx_score}, base_score: {head_exp.base_score}/{tail_exp.base_score}')
+        self.approx_rel_dic[hyperpath] = (head_exp.base_score + tail_exp.base_score)/2 - approx_score
+
+        update_df(self.df, {
+            'prediction': self.prediction,
+            'super_path': hyperpath,
+            'relevance': real_exp.relevance,
+            'probability': self.probability_dic[hyperpath],
+            'head_rel': head_exp.relevance,
+            'tail_rel': tail_exp.relevance,
+            'triples': all_samples_to_remove,
+            'approx_rel': self.approx_rel_dic[hyperpath],
+        }, 'hyperpath.csv')
+        
+        with open(f'{args.output_folder}/hyperpath/{self.prediction}.json', 'w') as f:
+            json.dump(self.json(), f, indent=4)
+
+        return hyperpath, real_exp
+
+    
+    def json(self):
+        ret = {}
+        for hyperpath, exp in self.path_explanations.items():
+            head_exp = self.head_explanations[hyperpath[1]]
+            tail_exp = self.tail_explanations[hyperpath[-2]]
+            # approx_exp = Explanation.build(self.prediction, head_exp.samples_to_remove + tail_exp.samples_to_remove, [head, tail])
+            ret[hyperpath] = {
+                'exp': exp.json(),
+                'head_exp': head_exp.json(),
+                'tail_exp': tail_exp.json(),
+                'relevance': exp.relevance,
+                'probability': self.probability_dic[hyperpath],
+                'approx_rel': self.approx_rel_dic[hyperpath],
+            }
+        # sort hyperpath by rel in a descending order
+        ret = sorted(ret.items(), key=lambda x: x[1]['relevance'], reverse=True)
+        return ret

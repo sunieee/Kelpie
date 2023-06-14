@@ -10,7 +10,7 @@ explain() {
         embedding_model=""
         method=$2
         run=$3  # 111
-        output_folder=stage3/$dataset/${method}${embedding_model}-assumption1-inf
+        output_folder=stage4/$dataset/${method}${embedding_model}-framework
         
         echo $output_folder
         rm -rf $output_folder
