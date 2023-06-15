@@ -446,11 +446,24 @@ for i, fact in enumerate(testing_facts[:2000]):
     #     print('too many hops, skip')
     #     continue
 
+    logger.info('Creating generators')
     head_generator = OneHopGenerator('head', prediction, phs)
     tail_generator = OneHopGenerator('tail', prediction, pts)
     path_generator = PathGenerator(prediction, super_paths)
 
-    
+    logger.info('Start generating')
+    while not head_generator.finished() or not tail_generator.finished() or not path_generator.finished():
+        if not head_generator.finished():
+            head, head_exp = head_generator.generate()
+            path_generator.renew_head(head, head_exp)
+        
+        if not tail_generator.finished():
+            tail, tail_exp = tail_generator.generate()
+            path_generator.renew_tail(tail, tail_exp)
+
+        if not path_generator.finished():
+            path, path_exp = path_generator.generate()
+
 
 print(cnt_df.describe())
 cnt_df.describe().to_csv(f'{args.output_folder}/describe.csv', index=False)

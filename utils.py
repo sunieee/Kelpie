@@ -16,6 +16,7 @@ from datetime import datetime
 from tqdm import tqdm
 from dataset import Dataset
 import json
+from queue import PriorityQueue
 
 from link_prediction.models.transe import TransE
 from link_prediction.models.complex import ComplEx
@@ -398,6 +399,7 @@ def update_df(df, dic, save_path):
 
 
 def overlapping_block_division(neighbors, m):
+    neighbors = list(neighbors)
     n = len(neighbors)
     k = math.ceil(math.log(n, m))
     N = m ** k
@@ -1275,9 +1277,46 @@ class Combination:
                 break
 
         return compound_explanations
+    
+
+class Generator:
+    def __init__(self, prediction) -> None:
+        self.prediction = prediction
+        self.windows = []
+        self.queue = PriorityQueue()
+        self.upperbound_dic = {}
+
+    def finished(self):
+        """Use a sliding window for all generators (window size=5). 
+        Records all the relevance generated, 
+        continue with the probability of mean of relevance in the recent window 
+        dividing the largest relevance, else finish.
+
+        Returns:
+            _type_: _description_
+        """
+        if self.empty():
+            return True
+        if len(self.windows) < 5:
+            return False
+        prob = mean(self.windows[-5:]) / max(self.windows)
+        # generate a random number between 0 and 1
+        if random.random() > prob:
+            return True
+        return False
+    
+    def generate(self):
+        pass
+
+    def json(self):
+        pass
+
+    def empty(self):
+        return self.queue.empty()
 
 
-class OneHopGenerator:
+
+class OneHopGenerator(Generator):
     df = pd.DataFrame()
     def __init__(self, perspective, prediction, neighbors) -> None:
         """For given perspective, generate top one hop explanation 
@@ -1289,44 +1328,53 @@ class OneHopGenerator:
             prediction (tuple): sample to explain
             neighbors (list[int]): neighbors of the perspective entity
         """
+        super().__init__(prediction)
+
         self.perspective = perspective
         self.prediction = prediction
         self.neighbors = neighbors
         self.one_hop_explanations = {}
         self.entity = prediction[0] if perspective == 'head' else prediction[2]
-
-        self.explanations = defaultdict(list)
+        self.ele2exp = defaultdict(list)
         
         if len(neighbors) <= 20:
             for neighbor in neighbors:
-                self.explanations[neighbor] = [self.calculate_group([neighbor])]
-            self.neighbors.sort(key=lambda x: self.explanations[x][0].relevance, reverse=True)
+                exp = self.calculate_group([neighbor])
+                self.ele2exp[neighbor] = [exp]
+                self.upperbound_dic[neighbor] = exp.relevance
+                self.queue.put((-exp.relevance, neighbor))
+            # self.neighbors.sort(key=lambda x: self.ele2exp[x][0].relevance, reverse=True)
             logger.info('==========no need to ODB==========')
             for neighbor in self.neighbors:
-                logger.info(f'{neighbor}: {self.explanations[neighbor][0].relevance}')
+                logger.info(f'{neighbor}: {self.upperbound_dic[neighbor]}')
 
         else:
-            m = max(math.ceil(len(neighbors) / 50), 2)
+            m = max(math.ceil(len(neighbors) / 30), 3)
             group_id_to_elements, element_id_to_groups = overlapping_block_division(self.neighbors, m)
+
+            print(self.neighbors)
+            print(m)
 
             logger.info(f'==========need to ODB==========, n: {len(neighbors)}, m: {m}')
 
             for group_id, group in group_id_to_elements.items():
+                if len(group) == 0:
+                    continue
                 exp = self.calculate_group(group)
                 exp.group_id = group_id
                 
                 for element_id in group:
-                    self.explanations[element_id].append(exp)
-                    
-            self.probability_dic = {}
-            self.neighbors.sort(key=lambda x: self.calculate_probability(x), reverse=True)
-
+                    self.ele2exp[element_id].append(exp)
+            
+            for neighbor in self.neighbors:
+                self.calculate_upperbound(neighbor)
+            # self.neighbors.sort(key=lambda x: self.calculate_probability(x), reverse=True)
             logger.info('==========ODB completed, probability==========')
             for neighbor in self.neighbors:
-                logger.info(f'{neighbor}: {self.probability_dic[neighbor]}')
+                logger.info(f'{neighbor}: {self.upperbound_dic[neighbor]}')
     
 
-    def calculate_probability(self, neighbor):
+    def calculate_upperbound(self, neighbor):
         """calculate valid probability of a list of explanations
         P(R_hi>x) = P(xi-d_x * eta_h > x) * P(yi-d_y * eta_h > x) * ...
                 = P(eta_h < (xi-x)/d_x) * P(eta_h < (yi-x)/d_y) * ...
@@ -1334,49 +1382,55 @@ class OneHopGenerator:
         where Fh is the CDF of eta_h.
 
         Returns:
-            float: valid probability
+            float: upperbound
         """
-        explanations = self.explanations[neighbor]
+        explanations = self.ele2exp[neighbor]
         lab = self.persective[0]
-        ret = 1
+        ret = np.inf
         for exp in explanations:
             rel_group = exp.relevance
             delta_group = exp.ret['delta_inf'] * exp.ret[f'parital_{lab}_all_inf']
-            point = (rel_group - DEFAULT_VALID_THRESHOLD) / delta_group
+            # point = (rel_group - DEFAULT_VALID_THRESHOLD) / delta_group
+            # ret *= rv_dic[f'eta_{lab}'].cdf(point)
+            upperbound = rel_group - delta_group * coef[f'g_{lab}']
+
             
-            ret *= rv_dic[f'eta_{lab}'].cdf(point)
         
-        self.probability_dic[neighbor] = ret
+        self.upperbound_dic[neighbor] = ret
+        self.queue.put((-ret, neighbor))
         return ret
+    
+
 
     def generate(self):
         """return one top explanation
         """
-        for neighbor in self.neighbors:
-            if neighbor in self.one_hop_explanations:
-                continue
-            if len(self.explanations[neighbor]) != 1:
-                exp = self.calculate_group([neighbor])
-            else:
-                exp = self.explanations[neighbor][0]
-            self.one_hop_explanations[neighbor] = exp
+        neg_prob, neighbor = self.queue.get()
+        assert neighbor not in self.one_hop_explanations
 
-            update_df(self.df, 
-                {
-                    'neighbor': neighbor,
-                    'entity': self.entity,
-                    'perspective': self.perspective,
-                    'prediction': self.prediction,
-                    'relevance': exp.relevance,
-                    'probability': self.probability_dic[neighbor],
-                    'rank': self.neighbors.index(neighbor)
-                }, f'{self.perspective}_explanations.csv')
+        if len(self.ele2exp[neighbor]) != 1:
+            exp = self.calculate_group([neighbor])
+        else:
+            exp = self.ele2exp[neighbor][0]
+        self.one_hop_explanations[neighbor] = exp
+
+        update_df(self.df, 
+            {
+                'neighbor': neighbor,
+                'entity': self.entity,
+                'perspective': self.perspective,
+                'prediction': self.prediction,
+                'relevance': exp.relevance,
+                'probability': self.upperbound_dic[neighbor],
+                'rank': self.neighbors.index(neighbor)
+            }, f'{self.perspective}_explanations.csv')
+        
+        with open(f'{args.output_folder}/{self.perspective}/{self.prediction}.json', 'w') as f:
+            json.dump(self.json(), f, indent=4)
+        
+        self.windows.append(exp.relevance)
+        return neighbor, exp
             
-            with open(f'{args.output_folder}/{self.perspective}/{self.prediction}.json', 'w') as f:
-                json.dump(self.json(), f, indent=4)
-            return neighbor, exp
-            
-        return None, None
     
     def json(self):
         ret = {}
@@ -1385,7 +1439,7 @@ class OneHopGenerator:
                 'neighbor': neighbor,
                 'entity': self.entity,
                 'relevance': exp.relevance,
-                'probability': self.probability_dic[neighbor],
+                'probability': self.upperbound_dic[neighbor],
                 'rank': self.neighbors.index(neighbor),
                 'exp': exp.json()
             }
@@ -1396,12 +1450,15 @@ class OneHopGenerator:
         all_samples = set()
         for neighbor in group:
             all_samples |= args.available_samples[neighbor] & args.available_samples[self.entity]
+        logger.info(f'all samples: {len(all_samples)}, group: {len(group)}')
         return Explanation.build(self.prediction, list(all_samples), [self.entity])
 
 
-import queue
-class PathGenerator:
+class PathGenerator(Generator):
+    df = pd.DataFrame()
     def __init__(self, prediction, hyperpaths) -> None:
+        super().__init__(prediction)
+
         self.prediction = prediction
         self.hyperpaths = hyperpaths
         self.path_explanations = {}
@@ -1414,7 +1471,6 @@ class PathGenerator:
             self.head_hyperpaths[hyperpath[1]].add(hyperpath)
             self.tail_hyperpaths[hyperpath[-2]].add(hyperpath)
 
-        self.queue = queue.PriorityQueue()
         self.probability_dic = {}
         self.approx_rel_dic = {}
 
@@ -1461,9 +1517,10 @@ class PathGenerator:
 
 
     def generate(self):
-        if self.queue.empty():
-            return None, None
-        
+        """
+        return one top explanation
+        You should examine whether the Generator is empty before calling this function
+        """
         neg_prob, hyperpath = self.queue.get()
         head, relation, tail = self.prediction
         head_exp = self.head_explanations[hyperpath[1]]
@@ -1476,6 +1533,10 @@ class PathGenerator:
             b = hyperpath[i+1]
             all_samples_to_remove |= args.available_samples[a] & args.available_samples[b]
         real_exp = Explanation.build(self.prediction, list(all_samples_to_remove), list(hyperpath))
+
+        assert self.path_explanations[hyperpath] == 1
+        self.path_explanations[hyperpath] = real_exp
+        self.window.append(real_exp.relevance)
         
         # concat the first of head_exp.pt_embedding and the last of tail_exp.pt_embedding (pt_embedding is a tensor)
         approx_embedding = torch.cat([head_exp.pt_embedding[0], tail_exp.pt_embedding[-1]], dim=0)
@@ -1503,6 +1564,8 @@ class PathGenerator:
     def json(self):
         ret = {}
         for hyperpath, exp in self.path_explanations.items():
+            if exp == 1:    # wait to be calculated
+                continue
             head_exp = self.head_explanations[hyperpath[1]]
             tail_exp = self.tail_explanations[hyperpath[-2]]
             # approx_exp = Explanation.build(self.prediction, head_exp.samples_to_remove + tail_exp.samples_to_remove, [head, tail])

@@ -262,19 +262,19 @@ class ConvE(Model):
         all_ret = {}
         for p in [1, 2, float('inf')]:
             ret = {
-                f'partial_{p}': rd(torch.norm(grad_g[0], p=p)),
-                f'partial_t_{p}': rd(torch.norm(g, p=p)),
-                f'partial_h_{p}': rd(torch.norm(grad_g[0]) * torch.norm(tail_embeddings, p=p)),
-                f'dh_dt_grad_{p}': rd(torch.norm(dh_dt_grad[0], p=p)),
-                f'dt_dh_grad_{p}': rd(torch.norm(dt_dh_grad[0], p=p)),
-                f'dh_grad_{p}': rd(torch.norm(grad[0], p=p)),
-                f'dt_grad_{p}': rd(torch.norm(grad[1], p=p))
+                f'partial_{p}': torch.norm(grad_g[0], p=p),
+                f'partial_t_{p}': torch.norm(g, p=p),
+                f'partial_h_{p}': torch.norm(grad_g[0]) * torch.norm(tail_embeddings, p=p),
+                f'dh_dt_grad_{p}': torch.norm(dh_dt_grad[0], p=p),
+                f'dt_dh_grad_{p}': torch.norm(dt_dh_grad[0], p=p),
+                f'dh_grad_{p}': torch.norm(grad[0], p=p),
+                f'dt_grad_{p}': torch.norm(grad[1], p=p)
             }
             all_ret.update(ret)
 
         # detach and move all the values tensor to cpu
         for k, v in all_ret.items():
-            all_ret[k] = rd(v.detach().cpu().numpy().item())
+            all_ret[k] = rd(v.cpu().detach().numpy().item())
 
         return all_ret
 
