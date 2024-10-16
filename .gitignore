@@ -16,4 +16,5 @@ major_revision/
 .Trashes
 ehthumbs.db
 Thumbs.db
-
+output*
+*.log
