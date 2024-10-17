@@ -2,16 +2,38 @@
 ### END TO END EXPERIMENTS ###
 ##############################
 
-# Kelpie Necessary ComplEx WN18
-python3 explain.py --dataset WN18 --model_path stored_models/ComplEx_WN18.pt --optimizer Adagrad --dimension 500 --batch_size 1000 --max_epochs 20 --learning_rate 0.1 --reg 5e-2 --facts_to_explain_path input_facts/complex_wn18_random.csv --model complex && \
-python3 verify_explanations.py --dataset WN18 --model_path stored_models/ComplEx_WN18.pt --dimension 500 --batch_size 1000 --max_epochs 20 --learning_rate 0.1 --reg 5e-2 --model complex && \
-mv output_end_to_end.csv scripts/experiments/end_to_end/kelpie_necessary_complex_wn18.csv && \
-rm output_*.csv && \
+python test.py --model complex --dataset FB15k-237 --model_path stored_models/ComplEx_FB15k-237.pt --dimension 1000 --batch_size 1000 --max_epochs 100 --learning_rate 0.1 --reg 5e-2
+
+# kelpie
+python3 explain.py --dataset FB15k-237 --model_path stored_models/ComplEx_FB15k-237.pt --optimizer Adagrad --dimension 1000 --batch_size 1000 --max_epochs 100 --learning_rate 0.1 --reg 5e-2 --facts_to_explain_path out/complex_FB15k-237/input_facts.csv --model complex --relation /people/person/profession
+python3 verify_explanations.py --dataset FB15k-237 --model_path stored_models/ComplEx_FB15k-237.pt --dimension 1000 --batch_size 1000 --max_epochs 100 --learning_rate 0.1 --reg 5e-2 --model complex
+mv output* out/complex_FB15k-237/kelpie
+
+# k1
+python3 explain.py --dataset FB15k-237 --model_path stored_models/ComplEx_FB15k-237.pt --optimizer Adagrad --dimension 1000 --batch_size 1000 --max_epochs 100 --learning_rate 0.1 --reg 5e-2 --facts_to_explain_path out/complex_FB15k-237/input_facts.csv --model complex --relation /people/person/profession --baseline k1  
+mv output* out/complex_FB15k-237/k1
+
+# k1_abstract
+python3 explain.py --dataset FB15k-237 --model_path stored_models/ComplEx_FB15k-237.pt --optimizer Adagrad --dimension 1000 --batch_size 1000 --max_epochs 100 --learning_rate 0.1 --reg 5e-2 --facts_to_explain_path out/complex_FB15k-237/input_facts.csv --model complex --relation /people/person/profession --baseline k1_abstract
+mv output* out/complex_FB15k-237/k1_abstract
+
+# k1_relation_double
+python3 explain.py --dataset FB15k-237 --model_path stored_models/ComplEx_FB15k-237.pt --optimizer Adagrad --dimension 1000 --batch_size 1000 --max_epochs 100 --learning_rate 0.1 --reg 5e-2 --facts_to_explain_path out/complex_FB15k-237/input_facts.csv --model complex --relation /people/person/profession --baseline k1_relation_double
+mv output* out/complex_FB15k-237/k1_relation_double
+
+
+
 
 # Kelpie Necessary ComplEx FB15k-237
 python3 explain.py --dataset FB15k-237 --model_path stored_models/ComplEx_FB15k-237.pt --optimizer Adagrad --dimension 1000 --batch_size 1000 --max_epochs 100 --learning_rate 0.1 --reg 5e-2 --facts_to_explain_path input_facts/complex_fb15k237_random.csv --model complex && \
 python3 verify_explanations.py --dataset FB15k-237 --model_path stored_models/ComplEx_FB15k-237.pt --dimension 1000 --batch_size 1000 --max_epochs 100 --learning_rate 0.1 --reg 5e-2 --model complex && \
 mv output_end_to_end.csv scripts/experiments/end_to_end/kelpie_necessary_complex_fb15k237.csv && \
+rm output_*.csv && \
+
+# Kelpie Necessary ComplEx WN18
+python3 explain.py --dataset WN18 --model_path stored_models/ComplEx_WN18.pt --optimizer Adagrad --dimension 500 --batch_size 1000 --max_epochs 20 --learning_rate 0.1 --reg 5e-2 --facts_to_explain_path input_facts/complex_wn18_random.csv --model complex && \
+python3 verify_explanations.py --dataset WN18 --model_path stored_models/ComplEx_WN18.pt --dimension 500 --batch_size 1000 --max_epochs 20 --learning_rate 0.1 --reg 5e-2 --model complex && \
+mv output_end_to_end.csv scripts/experiments/end_to_end/kelpie_necessary_complex_wn18.csv && \
 rm output_*.csv && \
 
 # Kelpie Necessary ConvE WN18RR

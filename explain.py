@@ -11,6 +11,7 @@ sys.path.append(
 
 from dataset import ALL_DATASET_NAMES, Dataset
 from kelpie import Kelpie
+from k1_abstract import K1_asbtract
 from data_poisoning import DataPoisoning
 from criage import Criage
 from link_prediction.models.complex import ComplEx
@@ -46,11 +47,12 @@ parser.add_argument('--feature_map_dropout', type=float, default=0.5, help="Feat
 parser.add_argument('--hidden_size', type=int, default=9728, help="Hidden layer size (ConvE)")
 parser.add_argument('--label_smoothing', type=float, default=0.1, help="Label smoothing (ConvE)")
 parser.add_argument('--coverage', type=int, default=10, help="Number of random entities to extract and convert")
-parser.add_argument('--baseline', type=str, default=None, choices=[None, "k1", "data_poisoning", "criage"], help="Baseline engine to use")
+parser.add_argument('--baseline', type=str, default=None, help="Baseline engine to use")
 parser.add_argument('--entities_to_convert', type=str, help="Path of the file with the entities to convert (baselines)")
 parser.add_argument('--relevance_threshold', type=float, default=None, help="Relevance acceptance threshold")
 parser.add_argument('--prefilter', choices=[TOPOLOGY_PREFILTER, TYPE_PREFILTER, NO_PREFILTER], default=NO_PREFILTER, help="Prefilter type")
 parser.add_argument('--prefilter_threshold', type=int, default=20, help="Number of promising training facts to keep after prefiltering")
+parser.add_argument('--relation', type=str, help="Relation to explain")
 
 args = parser.parse_args()
 
@@ -70,6 +72,11 @@ dataset = Dataset(name=args.dataset, separator="\t", load=True)
 print("Reading facts to explain...")
 with open(args.facts_to_explain_path, "r") as facts_file:
     testing_facts = [x.strip().split("\t") for x in facts_file.readlines()]
+
+if args.relation is not None:
+    print('total facts:', len(testing_facts))
+    testing_facts = [fact for fact in testing_facts if fact[1] == args.relation]
+    print('facts with relation:', len(testing_facts))
 
 # Select and initialize the model
 if args.model == 'complex':
@@ -104,31 +111,34 @@ elif args.baseline == "criage":
 elif args.baseline == "k1":
     kelpie = Kelpie(model=model, dataset=dataset, hyperparameters=hyperparameters, prefilter_type=args.prefilter,
                     relevance_threshold=args.relevance_threshold, max_explanation_length=1)
+elif args.baseline == "k1_abstract":
+    kelpie = K1_asbtract(model=model, dataset=dataset, hyperparameters=hyperparameters, relevance_threshold=args.relevance_threshold, max_explanation_length=1)
 
 # Handle necessary explanations only
 start_time = time.time()
 output = open("output.txt", "w")
 
-for i, fact in enumerate(testing_facts):
+total_count = 10    # len(testing_facts)
+for i, fact in enumerate(testing_facts[:total_count]):
     head, relation, tail = fact
-    print(f"Explaining fact {i + 1}/{len(testing_facts)}: <{head}, {relation}, {tail}>")
+    print(f"Explaining fact {i + 1}/{total_count}: <{head}, {relation}, {tail}>")
     head_id, relation_id, tail_id = dataset.get_id_for_entity_name(head), dataset.get_id_for_relation_name(relation), dataset.get_id_for_entity_name(tail)
     sample_to_explain = (head_id, relation_id, tail_id)
 
     # Necessary explanations
-    rule_samples_with_relevance = kelpie.explain_necessary(sample_to_explain=sample_to_explain, perspective="head",
-                                                           num_promising_samples=args.prefilter_threshold)
+    rule_samples_with_relevance = kelpie.explain_necessary(sample_to_explain=sample_to_explain, perspective="head", num_promising_samples=args.prefilter_threshold)
 
-    # Collect and print the results
-    rule_facts_with_relevance = []
-    for cur_rule_with_relevance in rule_samples_with_relevance:
-        cur_rule_samples, cur_relevance = cur_rule_with_relevance
-        cur_rule_facts = [dataset.sample_to_fact(sample) for sample in cur_rule_samples]
-        cur_rule_facts = ";".join([";".join(x) for x in cur_rule_facts])
-        rule_facts_with_relevance.append(cur_rule_facts + ":" + str(cur_relevance))
+    if args.baseline != "k1_abstract":
+        # Collect and print the results
+        rule_facts_with_relevance = []
+        for cur_rule_with_relevance in rule_samples_with_relevance:
+            cur_rule_samples, cur_relevance = cur_rule_with_relevance
+            cur_rule_facts = [dataset.sample_to_fact(sample) for sample in cur_rule_samples]
+            cur_rule_facts = ";".join([";".join(x) for x in cur_rule_facts])
+            rule_facts_with_relevance.append(cur_rule_facts + ":" + str(cur_relevance))
 
-    output.write(f";{head};{relation};{tail}\n")
-    output.write(",".join(rule_facts_with_relevance) + "\n\n")
+        output.write(f";{head};{relation};{tail}\n")
+        output.write(",".join(rule_facts_with_relevance) + "\n\n")
 
 end_time = time.time()
 print(f"Required time: {end_time - start_time:.2f} seconds")

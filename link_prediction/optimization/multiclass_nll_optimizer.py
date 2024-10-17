@@ -115,7 +115,7 @@ class MultiClassNLLOptimizer(Optimizer):
 
                 batch_start += self.batch_size
                 bar.update(batch.shape[0])
-                bar.set_postfix(loss='{l.item():.0f}')
+                bar.set_postfix(loss=f'{l.item():.0f}')
 
 
     def step_on_batch(self, loss, batch):
@@ -169,4 +169,4 @@ class KelpieMultiClassNLLOptimizer(MultiClassNLLOptimizer):
 
                 batch_start += self.batch_size
                 bar.update(batch.shape[0])
-                bar.set_postfix(loss='{l.item():.0f}')
+                bar.set_postfix(loss=f'{l.item():.0f}')
