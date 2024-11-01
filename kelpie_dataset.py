@@ -221,17 +221,17 @@ class KelpieDataset(Dataset):
             The purpose of undoing the removals performed on a pre-existing KelpieDataset,
             instead of creating a new KelpieDataset from scratch, is to improve efficiency.
         """
-        if self.last_removed_samples_number <= 0:
-            raise Exception("No removal to undo.")
+        if self.last_removed_samples_number > 0:
+            # raise Exception("No removal to undo.")
 
-        # revert the self.kelpie_train_samples to the self.kelpie_train_samples_copy
-        self.kelpie_train_samples = copy.deepcopy(self.kelpie_train_samples_copy)
+            # revert the self.kelpie_train_samples to the self.kelpie_train_samples_copy
+            self.kelpie_train_samples = copy.deepcopy(self.kelpie_train_samples_copy)
 
-        # undo additions to to_filter and train_to_filter
-        for key in self.last_filter_removals:
-            for x in self.last_filter_removals[key]:
-                self.to_filter[key].append(x)
-                self.train_to_filter[key].append(x)
+            # undo additions to to_filter and train_to_filter
+            for key in self.last_filter_removals:
+                for x in self.last_filter_removals[key]:
+                    self.to_filter[key].append(x)
+                    self.train_to_filter[key].append(x)
 
         # reset the data structures used to undo additions
         self.last_removed_samples = []

@@ -18,3 +18,5 @@ ehthumbs.db
 Thumbs.db
 output*
 *.log
+out*
+*.bac

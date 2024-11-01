@@ -187,7 +187,14 @@ class PostTrainingEngine(ExplanationEngine):
         base_pt_best_entity_score, \
         base_pt_target_entity_rank = self.base_post_training_results_for(kelpie_model=base_kelpie_model,
                                                                          kelpie_dataset=kelpie_dataset,
-                                                                         original_sample_to_predict=sample_to_explain)
+                                                                         original_sample_to_predict=sample_to_explain,
+                                                                         perspective=perspective)
+        # base_pt_target_entity_score, \
+        # base_pt_best_entity_score, \
+        # base_pt_target_entity_rank = self.removal_post_training_results_for(kelpie_model=base_kelpie_model,
+        #                                                                  kelpie_dataset=kelpie_dataset,
+        #                                                                  original_sample_to_predict=sample_to_explain,
+        #                                                                  original_samples_to_remove=[])
 
         # run actual post-training by adding the passed samples to the perspective entity and see how it performs in the sample to convert
         pt_kelpie_model = kelpie_model_class(model=self.model,
@@ -260,7 +267,8 @@ class PostTrainingEngine(ExplanationEngine):
     def base_post_training_results_for(self,
                                        kelpie_model: KelpieModel,
                                        kelpie_dataset: KelpieDataset,
-                                       original_sample_to_predict: numpy.array):
+                                       original_sample_to_predict: numpy.array,
+                                       perspective: str):
 
         """
 
@@ -271,9 +279,10 @@ class PostTrainingEngine(ExplanationEngine):
         """
         original_sample_to_predict = (original_sample_to_predict[0], original_sample_to_predict[1], original_sample_to_predict[2])
         kelpie_sample_to_predict = kelpie_dataset.as_kelpie_sample(original_sample=original_sample_to_predict)
+        cache_id = (*original_sample_to_predict, perspective)
 
 
-        if not original_sample_to_predict in self._base_pt_model_results:
+        if not cache_id in self._base_pt_model_results:
             original_entity_name = kelpie_dataset.entity_id_2_name[kelpie_dataset.original_entity_id]
             print("\t\tRunning base post-training on entity " + original_entity_name + " with no additions")
             base_pt_model = self.post_train(kelpie_model_to_post_train=kelpie_model,
@@ -281,15 +290,28 @@ class PostTrainingEngine(ExplanationEngine):
 
             # then check how the base post-trained model performs on the kelpie sample to explain.
             # This means checking how the "clone entity" (with no additional samples) performs
-            base_pt_target_entity_score, \
-            base_pt_best_entity_score, \
-            base_pt_target_entity_rank = self.extract_detailed_performances_on_sample(base_pt_model, kelpie_sample_to_predict)
+            base_pt_target_entity_score_list = []
+            base_pt_best_entity_score_list = []
+            base_pt_target_entity_rank_list = []
 
-            self._base_pt_model_results[original_sample_to_predict] = (base_pt_target_entity_score,
+            # 2 times to get a more stable result
+            for _ in range(2):
+                base_pt_target_entity_score, \
+                base_pt_best_entity_score, \
+                base_pt_target_entity_rank = self.extract_detailed_performances_on_sample(base_pt_model, kelpie_sample_to_predict)
+                base_pt_target_entity_score_list.append(base_pt_target_entity_score)
+                base_pt_best_entity_score_list.append(base_pt_best_entity_score)
+                base_pt_target_entity_rank_list.append(base_pt_target_entity_rank)
+
+            base_pt_target_entity_score = numpy.mean(base_pt_target_entity_score_list)
+            base_pt_best_entity_score = numpy.mean(base_pt_best_entity_score_list)
+            base_pt_target_entity_rank = numpy.mean(base_pt_target_entity_rank_list)
+
+            self._base_pt_model_results[cache_id] = (base_pt_target_entity_score,
                                                                        base_pt_best_entity_score,
                                                                        base_pt_target_entity_rank)
 
-        return self._base_pt_model_results[original_sample_to_predict]
+        return self._base_pt_model_results[cache_id]
 
 
     def addition_post_training_results_for(self,
@@ -354,10 +376,12 @@ class PostTrainingEngine(ExplanationEngine):
         # the "remove_training_samples" method replaces the original entity with the kelpie entity by itself
         kelpie_dataset.remove_training_samples(original_samples_to_remove)
 
-        original_entity_name = kelpie_dataset.entity_id_2_name[kelpie_dataset.original_entity_id]
-        print("\t\tRunning post-training on entity " + original_entity_name + " removing samples: ")
-        for x in original_samples_to_remove:
+        original_entity_name = kelpie_dataset.entity_id_2_name[kelpie_dataset.original_entity_id]            
+        print("\t\tRunning post-training on entity " + original_entity_name + f" removing samples ({len(original_samples_to_remove)} in total): ")
+        for x in original_samples_to_remove[:10]:
             print ("\t\t\t" + kelpie_dataset.printable_sample(x))
+        if len(original_samples_to_remove) > 10:
+            print("\t\t\t...")
 
         # post-train a kelpie model on the dataset that has undergone the removal
         cur_kelpie_model = self.post_train(kelpie_model_to_post_train=kelpie_model,

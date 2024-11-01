@@ -12,12 +12,33 @@ import json
 import os
 from collections import deque, defaultdict
 import re
+import numpy as np
+import html
 # from flask_cors import CORS
 # CORS(app, resources={r"/api/*": {"origins": "http://localhost:8080"}})
 
-max_length = 3
 dataset2triples = {}
 explanations = {}
+
+
+# 注意一定要使用与kelpie相同的预处理方式
+def read_txt(triples_path, separator="\t"):
+    with open(triples_path, 'r') as file:
+        lines = file.readlines()
+    
+    textual_triples = []
+    for line in lines:
+        line = html.unescape(line).lower()   # this is required for some YAGO3-10 lines
+        head_name, relation_name, tail_name = line.strip().split(separator)
+
+        # remove unwanted characters
+        head_name = head_name.replace(",", "").replace(":", "").replace(";", "")
+        relation_name = relation_name.replace(",", "").replace(":", "").replace(";", "")
+        tail_name = tail_name.replace(",", "").replace(":", "").replace(";", "")
+
+        textual_triples.append((head_name, relation_name, tail_name))
+    return textual_triples
+
 
 def read_train_triples(dataset):
     if dataset in dataset2triples:
@@ -26,21 +47,19 @@ def read_train_triples(dataset):
     train_file = f"data/{dataset}/train.txt"
     head_to_triples = defaultdict(set)
     tail_to_triples = defaultdict(set)
-    
-    with open(train_file, 'r') as file:
-        for line in file:
-            parts = line.strip().split('\t')
-            if len(parts) == 3:
-                triple = ','.join(parts)
-                head_to_triples[parts[0]].add(triple)
-                tail_to_triples[parts[2]].add(triple)
+
+    textual_triples = read_txt(train_file)
+    for head_name, relation_name, tail_name in textual_triples:
+        triple = f"{head_name},{relation_name},{tail_name}"
+        head_to_triples[head_name].add(triple)
+        tail_to_triples[tail_name].add(triple)
     
     print(f"Loaded {len(head_to_triples)} head entities and {len(tail_to_triples)} tail entities for {dataset}")
     dataset2triples[dataset] = (head_to_triples, tail_to_triples)
     return head_to_triples, tail_to_triples
 
 
-def find_paths_bfs(head_to_triples, tail_to_triples, head_id, tail_id):
+def find_paths_bfs(head_to_triples, tail_to_triples, head_id, tail_id, max_length=3):
     # 使用BFS进行路径搜索
     paths = []
     queue = deque([(head_id, [])])  # 队列中存储当前节点和路径
@@ -101,8 +120,8 @@ def search_subgraph(prediction, dataset):
     }
 
 
-def search_ht_relation(prediction, dataset):
-    ret = search_subgraph(prediction, dataset)
+def search_ht_relation_in_subgraph(prediction, dataset, max_length=3):
+    ret = search_subgraph(prediction, dataset, max_length)
     head, _, tail = prediction.split(',')
     head_relation2triples = defaultdict(list)    
     tail_relation2triples = defaultdict(list)
@@ -124,11 +143,27 @@ def search_ht_relation(prediction, dataset):
 
     return {
         **ret,
+        'head_relation2triples': {k: list(set(v)) for k, v in head_relation2triples.items()},
+        'tail_relation2triples': {k: list(set(v)) for k, v in tail_relation2triples.items()}
+    }
+
+def search_ht_relation(prediction, dataset):
+    print('search_ht_relation', prediction, dataset)
+    head_to_triples, tail_to_triples = read_train_triples(dataset)
+    print('head_to_triples', len(head_to_triples))
+    head, _, tail = prediction.split(',')
+    head_relation2triples = defaultdict(list)    
+    tail_relation2triples = defaultdict(list)
+
+    for triple in head_to_triples.get(head, set()):
+        head_relation2triples[triple.split(',')[1]].append(triple)
+    for triple in tail_to_triples.get(tail, set()):
+        tail_relation2triples[triple.split(',')[1]].append(triple)
+
+    return {
         'head_relation2triples': head_relation2triples,
         'tail_relation2triples': tail_relation2triples
     }
-
-
 
 
 class K1_asbtract:
@@ -191,41 +226,70 @@ class K1_asbtract:
         # sample 是序号三元组
         # fact 是id三元组
         
-        relation_map = {}
+        rule_samples_with_relevance = []
         print('sample_to_explain', sample_to_explain)
-        self.perspective = perspective
+        perspectives = ['head', 'tail'] if perspective == 'double' else [perspective]
         
         data = search_ht_relation(','.join(self.dataset.sample_to_fact(sample_to_explain)), self.dataset.name)
-        if perspective == 'head':
-            relation2triples = data['head_relation2triples']
+        for p in perspectives:
+            relation2triples = data[f'{p}_relation2triples']
+
+            all_triples = []
+            for triples in relation2triples.values():
+                all_triples.extend(triples)
+            if len(all_triples) == 0:
+                print(f"\n\tNo triples found for {p} relation")
+                continue
+            print(f"\n\tComputing relevance for all samples ({p} relation) for all relations")
+            print(f'\tremoving triples ({len(all_triples)}):', all_triples[:10])
+            result = self._compute_relevance_for_rule(sample_to_explain, [self.dataset.fact_to_sample(t.split(',')) for t in all_triples], p)
+            rule_samples_with_relevance.append({
+                    'perspective': p,
+                    'relation': 'all',
+                    'triples': all_triples[:10],
+                    'length': len(all_triples),
+                    **result
+                })
+            print("\tObtained result: " + str(result))
+            if result['score_deduction'] < 0:
+                # 提前剪枝，即使去掉了所有的triple，分数也没下降，说明解释失效
+                continue
 
             # this is an exception: all samples (= rules with length 1) are tested
+            if len(relation2triples) == 1:
+                rule_samples_with_relevance.append({
+                    'perspective': p,
+                    'relation': list(relation2triples.keys())[0],
+                    'triples': all_triples[:10],
+                    'length': len(all_triples),
+                    **result
+                })
+                continue
+
             i = 0
             for relation, triples in relation2triples.items():
                 i += 1
                 print("\n\tComputing relevance for sample " + str(i) + " on " + str(
-                    len(triples)) + "(head relation): " + relation)
-                relevance = self._compute_relevance_for_rule(sample_to_explain, [self.dataset.fact_to_sample(t.split(',')) for t in triples])
-                relation_map[relation] = {
-                    'perspective': 'head',
+                    len(relation2triples)) + f"({p} relation): " + relation)
+                print('\tremoving triples:', [t.split(',')[2] if p == "head" and t.split(',')[0] == sample_to_explain[0] 
+                                              else t.split(',')[0] for t in triples])
+                result = self._compute_relevance_for_rule(sample_to_explain, [self.dataset.fact_to_sample(t.split(',')) for t in triples], p)
+                rule_samples_with_relevance.append({
+                    'perspective': p,
                     'relation': relation,
-                    'triples': triples,
-                    'relevance': relevance
-                }
-                print("\tObtained relevance: " + str(relevance))
+                    'triples': triples[:10],
+                    'length': len(triples),
+                    **result
+                })
+                print("\tObtained result: " + str(result))
         
         # sort the relation_map by relevance
-        relation_list = relation_map.values()
-        relation_list.sort(key=lambda x: x['relevance'], reverse=True)
+        rule_samples_with_relevance.sort(key=lambda x: x['score_deduction'], reverse=True)
 
-        # save the relation_list to a json file
-        with open('output.json', 'w') as f:
-            json.dump(relation_list, f)
-
-        return relation_list
+        return rule_samples_with_relevance
     
 
-    def _compute_relevance_for_rule(self, sample_to_explain, nple_to_remove: list):
+    def _compute_relevance_for_rule(self, sample_to_explain, nple_to_remove: list, perspective: str = 'head'):
         rule_length = len(nple_to_remove)
 
         # convert the nple to remove into a list
@@ -236,21 +300,19 @@ class K1_asbtract:
         base_pt_best_entity_score, base_pt_target_entity_score, base_pt_target_entity_rank, \
         pt_best_entity_score, pt_target_entity_score, pt_target_entity_rank, execution_time = \
             self.engine.removal_relevance(sample_to_explain=sample_to_explain,
-                                          perspective=self.perspective,
+                                          perspective=perspective,
                                           samples_to_remove=nple_to_remove)
 
-        cur_line = ";".join(self.dataset.sample_to_fact(sample_to_explain)) + ";" + \
-                   ";".join([";".join(self.dataset.sample_to_fact(x)) for x in nple_to_remove]) + ";" + \
-                   str(original_target_entity_score) + ";" + \
-                   str(original_target_entity_rank) + ";" + \
-                   str(base_pt_target_entity_score) + ";" + \
-                   str(base_pt_target_entity_rank) + ";" + \
-                   str(pt_target_entity_score) + ";" + \
-                   str(pt_target_entity_rank) + ";" + \
-                   str(relevance) + ";" + \
-                   str(execution_time)
-
-        with open("output_details_" + str(rule_length) + ".csv", "a") as output_file:
-            output_file.writelines([cur_line + "\n"])
-
-        return relevance
+        score_deduction = (base_pt_target_entity_score - pt_target_entity_score) * 100 / base_pt_target_entity_score
+        if self.model.is_minimizer():
+            score_deduction = -score_deduction
+        return {
+            'rank_deduction': (pt_target_entity_rank - base_pt_target_entity_rank) / base_pt_target_entity_rank,
+            'score_deduction': score_deduction,
+            'relevance': relevance,
+            'old_score': base_pt_target_entity_score,
+            'new_score': pt_target_entity_score,
+            'old_rank': base_pt_target_entity_rank,
+            'new_rank': pt_target_entity_rank,
+        }
+    

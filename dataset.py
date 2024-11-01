@@ -22,6 +22,23 @@ ONE_TO_MANY="1-N"
 MANY_TO_ONE="N-1"
 MANY_TO_MANY="N-N"
 
+def read_txt(triples_path, separator="\t"):
+    with open(triples_path, 'r') as file:
+        lines = file.readlines()
+    
+    textual_triples = []
+    for line in lines:
+        line = html.unescape(line).lower()   # this is required for some YAGO3-10 lines
+        head_name, relation_name, tail_name = line.strip().split(separator)
+
+        # remove unwanted characters
+        head_name = head_name.replace(",", "").replace(":", "").replace(";", "")
+        relation_name = relation_name.replace(",", "").replace(":", "").replace(";", "")
+        tail_name = tail_name.replace(",", "").replace(":", "").replace(";", "")
+
+        textual_triples.append((head_name, relation_name, tail_name))
+    return textual_triples
+
 class Dataset:
 
     def __init__(self,
@@ -137,51 +154,39 @@ class Dataset:
             :return: a 2D numpy array containing the read facts,
                      and a 2D numpy array containing the corresponding samples
         """
-        textual_triples = []
+        textual_triples = read_txt(triples_path, separator)
         data_triples = []
 
-        with open(triples_path, "r") as triples_file:
-            lines = triples_file.readlines()
-            for line in lines:
-                line = html.unescape(line).lower()   # this is required for some YAGO3-10 lines
-                head_name, relation_name, tail_name = line.strip().split(separator)
+        for (head_name, relation_name, tail_name) in textual_triples:
+            self.entities.add(head_name)
+            self.entities.add(tail_name)
+            self.relations.add(relation_name)
 
-                # remove unwanted characters
-                head_name = head_name.replace(",", "").replace(":", "").replace(";", "")
-                relation_name = relation_name.replace(",", "").replace(":", "").replace(";", "")
-                tail_name = tail_name.replace(",", "").replace(":", "").replace(";", "")
+            if head_name in self.entity_name_2_id:
+                head_id = self.entity_name_2_id[head_name]
+            else:
+                head_id = self._entity_counter
+                self._entity_counter += 1
+                self.entity_name_2_id[head_name] = head_id
+                self.entity_id_2_name[head_id] = head_name
 
-                textual_triples.append((head_name, relation_name, tail_name))
+            if relation_name in self.relation_name_2_id:
+                relation_id = self.relation_name_2_id[relation_name]
+            else:
+                relation_id = self._relation_counter
+                self._relation_counter += 1
+                self.relation_name_2_id[relation_name] = relation_id
+                self.relation_id_2_name[relation_id] = relation_name
 
-                self.entities.add(head_name)
-                self.entities.add(tail_name)
-                self.relations.add(relation_name)
+            if tail_name in self.entity_name_2_id:
+                tail_id = self.entity_name_2_id[tail_name]
+            else:
+                tail_id = self._entity_counter
+                self._entity_counter += 1
+                self.entity_name_2_id[tail_name] = tail_id
+                self.entity_id_2_name[tail_id] = tail_name
 
-                if head_name in self.entity_name_2_id:
-                    head_id = self.entity_name_2_id[head_name]
-                else:
-                    head_id = self._entity_counter
-                    self._entity_counter += 1
-                    self.entity_name_2_id[head_name] = head_id
-                    self.entity_id_2_name[head_id] = head_name
-
-                if relation_name in self.relation_name_2_id:
-                    relation_id = self.relation_name_2_id[relation_name]
-                else:
-                    relation_id = self._relation_counter
-                    self._relation_counter += 1
-                    self.relation_name_2_id[relation_name] = relation_id
-                    self.relation_id_2_name[relation_id] = relation_name
-
-                if tail_name in self.entity_name_2_id:
-                    tail_id = self.entity_name_2_id[tail_name]
-                else:
-                    tail_id = self._entity_counter
-                    self._entity_counter += 1
-                    self.entity_name_2_id[tail_name] = tail_id
-                    self.entity_id_2_name[tail_id] = tail_name
-
-                data_triples.append((head_id, relation_id, tail_id))
+            data_triples.append((head_id, relation_id, tail_id))
 
         return numpy.array(textual_triples), numpy.array(data_triples).astype('int64')
 
