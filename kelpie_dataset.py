@@ -190,13 +190,20 @@ class KelpieDataset(Dataset):
         self.last_filter_removals = defaultdict(lambda:[])
         self.last_removed_kelpie_samples = []
 
+        # print("samples_to_remove", samples_to_remove)
         kelpie_train_samples_to_remove = Dataset.replace_entity_in_samples(samples=samples_to_remove,
                                                                            old_entity=self.original_entity_id,
                                                                            new_entity=self.kelpie_entity_id,
                                                                            as_numpy=False)
 
+        # print("kelpie_train_samples_to_remove", kelpie_train_samples_to_remove)
         # update to_filter and train_to_filter
         for (cur_head, cur_rel, cur_tail) in kelpie_train_samples_to_remove:
+            if cur_head == cur_tail and cur_tail not in self.to_filter[(cur_head, cur_rel)]:
+                print("\t\tWARNING: trying to remove a self-loop sample that is not present in the dataset")
+                print('\t\t', cur_head, cur_rel, cur_tail, self.sample_to_fact((cur_head, cur_rel, cur_tail)))
+                continue
+
             self.to_filter[(cur_head, cur_rel)].remove(cur_tail)
             self.to_filter[(cur_tail, cur_rel + self.num_direct_relations)].remove(cur_head)
             self.train_to_filter[(cur_head, cur_rel)].remove(cur_tail)

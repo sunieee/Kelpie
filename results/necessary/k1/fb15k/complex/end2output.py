@@ -13,6 +13,6 @@ for line in lines:
 
     output.write(';'.join(parts[:3]) + '\n')
     relevance = int(parts[-1]) - int(parts[-2]) + sigmoid(float(parts[-4]) - float(parts[-3]))
-    output.write(';'.join(parts[4:6]) + ':' + str(relevance) + '\n\n')
+    output.write(';'.join(parts[3:6]) + ':' + str(relevance) + '\n\n')
     
 output.close()

@@ -119,6 +119,7 @@ if args.metric in ['kelpie', 'criage', 'data_poisoning', 'k1']:
         best_rule = best_rule.split(";")
         best_rule_relevance_str=best_rule_relevance_str.strip('[').strip(']')
 
+        # print('processing:', prediction, best_rule, best_rule_relevance_str)
         data.append({
             "prediction": prediction,
             "explanation": [{

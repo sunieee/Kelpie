@@ -147,19 +147,51 @@ def search_ht_relation_in_subgraph(prediction, dataset, max_length=3):
         'tail_relation2triples': {k: list(set(v)) for k, v in tail_relation2triples.items()}
     }
 
+# def search_ht_relation(prediction, dataset):
+#     print('search_ht_relation', prediction, dataset)
+#     head_to_triples, tail_to_triples = read_train_triples(dataset)
+#     print('head_to_triples', len(head_to_triples), 'tail_to_triples', len(tail_to_triples))
+#     head, _, tail = prediction.split(',')
+#     head_relation2triples = defaultdict(list)    
+#     tail_relation2triples = defaultdict(list)
+
+#     # 不一定是head_to_triple，这样只找到以head开头的，但是以head结尾的也需要！
+#     head_triples = head_to_triples.get(head, set()) | tail_to_triples.get(head, set())
+#     tail_triples = head_to_triples.get(tail, set()) | tail_to_triples.get(tail, set())
+#     for triple in head_triples:
+#         head_relation2triples[triple.split(',')[1]].append(triple)
+#     for triple in tail_triples:
+#         tail_relation2triples[triple.split(',')[1]].append(triple)
+
+#     print('head_triples', len(head_triples), 'tail_triples', len(tail_triples))
+#     print('head_relations', len(head_relation2triples), 'tail_relations', len(tail_relation2triples))
+#     return {
+#         'head_relation2triples': head_relation2triples,
+#         'tail_relation2triples': tail_relation2triples
+#     }
+
+# 相同的relation 正和反是不一样的，不能直接或！
 def search_ht_relation(prediction, dataset):
     print('search_ht_relation', prediction, dataset)
     head_to_triples, tail_to_triples = read_train_triples(dataset)
-    print('head_to_triples', len(head_to_triples))
+    print('head_to_triples', len(head_to_triples), 'tail_to_triples', len(tail_to_triples))
     head, _, tail = prediction.split(',')
     head_relation2triples = defaultdict(list)    
     tail_relation2triples = defaultdict(list)
 
+    # 不一定是head_to_triple，这样只找到以head开头的，但是以head结尾的也需要！
     for triple in head_to_triples.get(head, set()):
         head_relation2triples[triple.split(',')[1]].append(triple)
+    for triple in tail_to_triples.get(head, set()):
+        head_relation2triples[triple.split(',')[1] + "'"].append(triple)
     for triple in tail_to_triples.get(tail, set()):
         tail_relation2triples[triple.split(',')[1]].append(triple)
+    for triple in head_to_triples.get(tail, set()):
+        tail_relation2triples[triple.split(',')[1] + "'"].append(triple)
 
+    print('head_triples: forward/backward', len(head_to_triples.get(head, set())), len(tail_to_triples.get(head, set())))
+    print('tail_triples: forward/backward', len(tail_to_triples.get(tail, set())), len(head_to_triples.get(tail, set())))
+    print('head_relations', len(head_relation2triples), 'tail_relations', len(tail_relation2triples))
     return {
         'head_relation2triples': head_relation2triples,
         'tail_relation2triples': tail_relation2triples
@@ -238,20 +270,20 @@ class K1_asbtract:
             for triples in relation2triples.values():
                 all_triples.extend(triples)
             if len(all_triples) == 0:
-                print(f"\n\tNo triples found for {p} relation")
+                print(f"\n\tERROR: No triples found for {p} relation!!!")
                 continue
             print(f"\n\tComputing relevance for all samples ({p} relation) for all relations")
-            print(f'\tremoving triples ({len(all_triples)}):', all_triples[:10])
+            print(f'\tremoving triples ({len(all_triples)}):', all_triples[:5])
             result = self._compute_relevance_for_rule(sample_to_explain, [self.dataset.fact_to_sample(t.split(',')) for t in all_triples], p)
             rule_samples_with_relevance.append({
                     'perspective': p,
                     'relation': 'all',
-                    'triples': all_triples[:10],
+                    'triples': all_triples[:5],
                     'length': len(all_triples),
                     **result
                 })
             print("\tObtained result: " + str(result))
-            if result['score_deduction'] < 0:
+            if result['score_reduction'] < 0:
                 # 提前剪枝，即使去掉了所有的triple，分数也没下降，说明解释失效
                 continue
 
@@ -260,7 +292,7 @@ class K1_asbtract:
                 rule_samples_with_relevance.append({
                     'perspective': p,
                     'relation': list(relation2triples.keys())[0],
-                    'triples': all_triples[:10],
+                    'triples': all_triples[:5],
                     'length': len(all_triples),
                     **result
                 })
@@ -277,14 +309,14 @@ class K1_asbtract:
                 rule_samples_with_relevance.append({
                     'perspective': p,
                     'relation': relation,
-                    'triples': triples[:10],
+                    'triples': triples[:5],
                     'length': len(triples),
                     **result
                 })
                 print("\tObtained result: " + str(result))
         
         # sort the relation_map by relevance
-        rule_samples_with_relevance.sort(key=lambda x: x['score_deduction'], reverse=True)
+        rule_samples_with_relevance.sort(key=lambda x: x['score_reduction'], reverse=True)
 
         return rule_samples_with_relevance
     
@@ -303,12 +335,12 @@ class K1_asbtract:
                                           perspective=perspective,
                                           samples_to_remove=nple_to_remove)
 
-        score_deduction = (base_pt_target_entity_score - pt_target_entity_score) * 100 / base_pt_target_entity_score
+        score_reduction = (base_pt_target_entity_score - pt_target_entity_score) * 100 / base_pt_target_entity_score
         if self.model.is_minimizer():
-            score_deduction = -score_deduction
+            score_reduction = -score_reduction
         return {
-            'rank_deduction': (pt_target_entity_rank - base_pt_target_entity_rank) / base_pt_target_entity_rank,
-            'score_deduction': score_deduction,
+            'rank_reduction': (pt_target_entity_rank - base_pt_target_entity_rank) / base_pt_target_entity_rank,
+            'score_reduction': score_reduction,
             'relevance': relevance,
             'old_score': base_pt_target_entity_score,
             'new_score': pt_target_entity_score,
@@ -316,3 +348,6 @@ class K1_asbtract:
             'new_rank': pt_target_entity_rank,
         }
     
+
+if __name__ == '__main__':
+    search_ht_relation('/m/02rxj,/user/tsegaran/random/taxonomy_subject/entry./user/tsegaran/random/taxonomy_entry/taxonomy,/m/04n6k', 'FB15k-237')

@@ -10,7 +10,10 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import argparse
 import threading
+import html
 from dataset import ALL_DATASET_NAMES
+from scipy.sparse import csr_matrix
+from scipy.sparse import lil_matrix
 # from flask_cors import CORS
 # CORS(app, resources={r"/api/*": {"origins": "http://localhost:8080"}})
 
@@ -19,15 +22,34 @@ MODEL_CHOICES = ['complex', 'conve', 'transe']
 
 parser = argparse.ArgumentParser(description="Model-agnostic tool for explaining link predictions")
 parser.add_argument('--dataset', choices=ALL_DATASET_NAMES, required=True, help="Dataset to use")
-parser.add_argument('--path', required=True, help="Input path to use")
-parser.add_argument('--max_hop', default=3, help="The length of max hop of paths")
+parser.add_argument('--model', choices=MODEL_CHOICES, required=True, help="Model to use: complex, conve, transe")
+# parser.add_argument('--max_hop', default=3, help="The length of max hop of paths")
+# 自适应max_length
 
 args = parser.parse_args()
-max_length = args.max_hop
 
 dataset2triples = {}
 dataset_map = {}
 explanations = {}
+
+# 注意一定要使用与kelpie相同的预处理方式
+def read_txt(triples_path, separator="\t"):
+    with open(triples_path, 'r') as file:
+        lines = file.readlines()
+    
+    textual_triples = []
+    for line in lines:
+        line = html.unescape(line).lower()   # this is required for some YAGO3-10 lines
+        head_name, relation_name, tail_name = line.strip().split(separator)
+
+        # remove unwanted characters
+        head_name = head_name.replace(",", "").replace(":", "").replace(";", "")
+        relation_name = relation_name.replace(",", "").replace(":", "").replace(";", "")
+        tail_name = tail_name.replace(",", "").replace(":", "").replace(";", "")
+
+        textual_triples.append((head_name, relation_name, tail_name))
+    return textual_triples
+
 
 def read_dateset(dataset):
     if dataset in dataset_map:
@@ -46,29 +68,32 @@ def read_dateset(dataset):
             entity_to_index[entity.strip()] = int(ix)
 
     num_entities = len(entity_to_index)
-    relation_to_matrix = defaultdict(lambda: np.zeros((num_entities, num_entities), dtype=int))
-    relation_to_triples = defaultdict(set)
-    # triples = set()
     
-    with open(train_file, 'r') as file:
-        for line in file:
-            parts = line.strip().split('\t')
-            triple = ','.join(parts)
-            # triples.add(triple)
-            
-            # Update mappings
-            head_to_triples[parts[0]].add(triple)
-            tail_to_triples[parts[2]].add(triple)
-            relation_to_triples[parts[1]].add(triple)
-            
-            # Update relation-specific adjacency matrix
-            h_idx = entity_to_index[parts[0]]
-            t_idx = entity_to_index[parts[2]]
-            relation_to_matrix[parts[1]][h_idx, t_idx] = 1
+    # 使用LIL格式初始化关系矩阵
+    relation_to_matrix = defaultdict(lambda: lil_matrix((num_entities, num_entities), dtype=int))
+    relation_to_triples = defaultdict(set)
 
-    # return triples, relation_to_matrix, head_to_triples, relation_to_triples
+    textual_triples = read_txt(train_file)
+    for head_name, relation_name, tail_name in textual_triples:
+        triple = f"{head_name},{relation_name},{tail_name}"            
+        # 更新映射
+        head_to_triples[head_name].add(triple)
+        tail_to_triples[tail_name].add(triple)
+        relation_to_triples[relation_name].add(triple)
+        
+        # 更新关系特定的邻接矩阵
+        h_idx = entity_to_index[head_name]
+        t_idx = entity_to_index[tail_name]
+        
+        # 使用LIL格式进行更新
+        relation_to_matrix[relation_name][h_idx, t_idx] = 1
+
+    # 转换为CSR格式以提高后续的性能
+    for rel in relation_to_matrix:
+        relation_to_matrix[rel] = relation_to_matrix[rel].tocsr()
+
+    # 返回字典
     ret = {
-        # 'triples': triples,
         'head_to_triples': head_to_triples,
         'tail_to_triples': tail_to_triples,
         'relation_to_matrix': relation_to_matrix,
@@ -87,17 +112,16 @@ def read_triples(dataset):
     relation_to_triples = defaultdict(set)
     head_to_triples = defaultdict(set)
     tail_to_triples = defaultdict(set)
+    textual_triples = read_txt(f"data/{dataset}/train.txt")
     
     print(f'[read_dateset] loading {dataset}')
-    train_file = f"data/{dataset}/train.txt"
-    with open(train_file, 'r') as file:
-        for line in file:
-            parts = line.strip().split('\t')
-            triple = ','.join(parts)
-            
-            head_to_triples[parts[0]].add(triple)
-            tail_to_triples[parts[2]].add(triple)
-            relation_to_triples[parts[1]].add(triple)
+    for head_name, relation_name, tail_name in textual_triples:
+        triple = f"{head_name},{relation_name},{tail_name}"
+        reverse_triple = f"{tail_name},{relation_name}',{head_name}"
+        head_to_triples[head_name].add(triple)
+        tail_to_triples[tail_name].add(triple)
+        relation_to_triples[relation_name].add(triple)
+        relation_to_triples[relation_name + "'"].add(reverse_triple)
 
     ret = {
         # 'triples': triples,
@@ -108,6 +132,70 @@ def read_triples(dataset):
     dataset2triples[dataset] = ret
     return ret
 
+
+def calculate_rule_metrics_with_matrix(head_rel, body_relations, dataset):
+    filename = body_relations.replace('/', '_')
+    if len(filename) > 200:
+        filename = filename[::2]
+    file_path = f"json/{dataset}/{head_rel.replace('/', '_')}/{filename}.json"
+
+    data = read_dateset(dataset)
+    # Read triples and build matrices for the training set
+    train_rel_to_matrix = data['relation_to_matrix']
+    train_rel_to_triples = data['relation_to_triples']
+    entity_to_index = data['entity_to_index']
+    body_rels = body_relations.split(',')
+
+    # Multiply matrices for each subsequent relation in the body
+    first_rel = body_rels[0]
+    print(f'[calculate_rule_metrics_with_matrix] relation0: {first_rel}')
+    base_matrix = train_rel_to_matrix[first_rel[:-1]].T if first_rel.endswith("'") else train_rel_to_matrix[first_rel]
+
+    # Multiply matrices for each subsequent relation in the body
+    body_matrix = base_matrix
+    for ix, body_rel in enumerate(body_rels[1:]):
+        print(f'[calculate_rule_metrics_with_matrix] relation{ix}: {body_rel}')
+        next_matrix = train_rel_to_matrix[body_rel[:-1]].T if body_rel.endswith("'") else train_rel_to_matrix[body_rel]
+        # Multiply and binarize the result
+        t = time.time()
+        body_matrix = body_matrix.dot(next_matrix)  # 直接点乘
+        body_matrix.data = np.ones_like(body_matrix.data)  # 二值化
+        # body_matrix = (body_matrix > 0).astype(int)
+        print(f'time: {time.time() - t}')
+
+    # Calculate body count: number of non-zero entries in the matrix, not np.sum, because elements are not binary
+    body_count = body_matrix.nnz
+
+    # Calculate support (supp) for the rule in the training set using 'relation_to_triples'
+    supp = 0
+    for triple in train_rel_to_triples[head_rel]:
+        head, rel, tail = triple.split(',')
+        h_idx = entity_to_index.get(head, -1)
+        t_idx = entity_to_index.get(tail, -1)
+        if h_idx != -1 and t_idx != -1 and body_matrix[h_idx, t_idx] > 0:
+            supp += 1
+
+    # Calculate head count in the training set
+    head_count = len(train_rel_to_triples[head_rel])
+
+    # Calculate SC and HC
+    SC = supp / body_count if body_count > 0 else 0
+    HC = supp / head_count if head_count > 0 else 0
+
+    ret = {
+        'supp': supp,
+        'body': body_count,
+        'head': head_count,
+        'HC': HC,
+        'SC': SC
+    }
+
+    print(f"Total Time: {time.time() - t}")
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, 'w') as f:
+        json.dump(ret, f)
+
+    return ret
 
 def calculate_rule_metrics(head_rel, body_relations, dataset):
     filename = body_relations.replace('/', '_')
@@ -131,32 +219,25 @@ def calculate_rule_metrics(head_rel, body_relations, dataset):
 
     # 计算 body 匹配数和 support
     rel = body_rels[0]
-    reverse = False
-    if rel.endswith("'"):
-        rel = rel[:-1]
-        reverse = True
     for triple in train_rel_to_triples[rel]:
-        if reverse:
-            tail, _, head = triple.split(',')
-        else:
-            head, _, tail = triple.split(',')
-        head2entity_map[1][head].add(tail)
+        h, _, t = triple.split(',')
+        head2entity_map[1][h].add(t)
 
     ix = 1
     for rel in body_rels[1:]:
+        print(f"[calculate_rule_metrics] {head_rel} <= {body_rels}: Processing {rel}")
         ix += 1
-        reverse = False
-        if rel.endswith("'"):
-            rel = rel[:-1]
-            reverse = True
+        endpoint_entity_set = set()
+        for k, v in head2entity_map[ix - 1].items():
+            endpoint_entity_set.update(v)
+        print('endpoint_entity_set', len(endpoint_entity_set))
+        
         for triple in train_rel_to_triples[rel]:
-            if reverse:
-                tail, _, head = triple.split(',')
-            else:
-                head, _, tail = triple.split(',')
-            for k, v in head2entity_map[ix - 1].items():
-                if head in v:
-                    head2entity_map[ix][k].add(tail)
+            h, _, t = triple.split(',')
+            if h in endpoint_entity_set:
+                for k, v in head2entity_map[ix - 1].items():
+                    if h in v:
+                        head2entity_map[ix][k].add(t)
 
     # 计算 head count
     head_count = len(train_rel_to_triples[head_rel])
@@ -188,7 +269,8 @@ def calculate_rule_metrics(head_rel, body_relations, dataset):
     return ret
 
 
-def find_paths_bfs(head_to_triples, tail_to_triples, head_id, tail_id):
+def find_paths_bfs(head_to_triples, tail_to_triples, head_id, tail_id, 
+                   max_length=3, head_constraints=None, tail_constraints=None):
     # 使用BFS进行路径搜索
     paths = []
     queue = deque([(head_id, [])])  # 队列中存储当前节点和路径
@@ -208,60 +290,105 @@ def find_paths_bfs(head_to_triples, tail_to_triples, head_id, tail_id):
         
         # 从head映射中找到所有以current_id为head的三元组
         for triple in head_to_triples.get(current_id, set()):
+            if head_constraints is not None:
+                if len(current_path) == 0 and triple.split(',')[1] in head_constraints:
+                    continue
+
             t = triple.split(',')[2]
             if t not in visited:  # triple[2] 是 tail
                 queue.append((t, current_path + [triple]))
         
         # 从tail映射中找到所有以current_id为tail的三元组（反向边）
         for triple in tail_to_triples.get(current_id, set()):
+            if head_constraints is not None:
+                if len(current_path) == 0 and triple.split(',')[1] + "'" in head_constraints:
+                    continue
+
             t = triple.split(',')[0]
             if t not in visited:  # triple[0] 是 head
                 queue.append((t, current_path + [triple]))
 
+    if tail_constraints is not None:
+        filtered_paths = []
+        for path in paths:
+            relation = path[-1].split(',')[1]
+            if path[-1].split(',')[0] == tail_id:
+                relation += "'"
+            if relation in tail_constraints:
+                filtered_paths.append(path)
+        return filtered_paths
     return paths
 
 
-def search_subgraph(prediction, dataset, condense=False):
-    file_name = prediction.replace('/', '+')
-    file_path = f"json/{dataset}/{file_name}.json"
+def search_subgraph(prediction, dataset, condense=False, head_constraints=None, tail_constraints=None):
+    # file_name = prediction.replace('/', '+')
+    # file_path = f"json/{dataset}/{file_name}.json"
 
-    if os.path.exists(file_path):
-        with open(file_path, 'r') as f:
-            return json.load(f)
+    # if os.path.exists(file_path):
+    #     with open(file_path, 'r') as f:
+    #         ret = json.load(f)
+    #         if len(ret['paths']) >= 10:
+    #             return ret
         
     data = read_triples(dataset)
     head_to_triples = data['head_to_triples']
     tail_to_triples = data['tail_to_triples']
-    head_id, _, tail_id = prediction.split(',')
+    head, _, tail = prediction.split(',')
     
     # 使用BFS查找路径
-    paths = find_paths_bfs(head_to_triples, tail_to_triples, head_id, tail_id)
-    
+    max_length = 3
+    while True:
+        paths = find_paths_bfs(head_to_triples, tail_to_triples, head, tail, 
+                               max_length=max_length, head_constraints=head_constraints, tail_constraints=tail_constraints)
+        print(f'[{prediction}]', 'max_length: ', max_length, 'path count: ', len(paths))
+        max_length += 1 
+        # 注意这里修改了最低限制，避免搜索长度太短！ WN18需要重新跑
+        if len(paths) >= 10 or max_length > 6:
+            break
+
     # Collect unique triples used in paths
     triples_map = {}
     paths_with_triples = []
+    relation_path_map = defaultdict(list)
     
     for path in paths:
         path_indices = []
+        path_vector = [head]
+        current_id = head
+
         for triple in path:
             # 用一个元组表示triple，避免使用不可哈希的字典
             if triple not in triples_map:
                 l = len(triples_map)
                 triples_map[triple] = l
             path_indices.append(triples_map[triple])
+
+            head_id, relation_id, tail_id = triple.split(',')
+            if head_id == current_id:
+                current_id = tail_id
+            else:
+                current_id = head_id
+                relation_id = f"{relation_id}'" # 用'代表反向关系
+            path_vector.append(relation_id)
+            path_vector.append(current_id)
+
+        relation_path = path_vector[1::2]
+        relation_path_map[','.join(relation_path)].append(len(paths_with_triples))
         paths_with_triples.append(path_indices)
+
 
     ret = {
         "prediction": prediction,
         "triples": [t[0] for t in sorted(triples_map.items(), key=lambda x: x[1])],
-        "paths": paths_with_triples
+        "paths": paths_with_triples,
+        "relation_path_map": relation_path_map
     }
     if condense:
         ret.update(condense_graph(ret))
 
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    with open(file_path, 'w') as f:
-        json.dump(ret, f)
+    # os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    # with open(file_path, 'w') as f:
+    #     json.dump(ret, f)
     return ret
 
 
@@ -485,12 +612,21 @@ def set_to_list(obj):
 # setting = 'V3'
 # filename = f"json/{model}/{dataset}/{setting}.json"
 dataset = args.dataset
-input_path = os.path.join(args.path, 'output.json')
-output_path = os.path.join(args.path, 'process')
+dir_path = os.path.join('out', f'{args.model}_{args.dataset}')
+input_path = os.path.join(dir_path, 'output.json')
+output_path = os.path.join(dir_path, 'process')
 with open(input_path, 'r') as file:
     predictions = json.load(file)
 
-all_keys = [','.join(t['prediciton']) for t in predictions]
+all_keys = []
+for t in predictions:
+    try:
+        print('processing prediction: ', t['prediction'])
+        all_keys.append(','.join(t['prediction']))
+    except:
+        print('failed prediction: ', t)
+
+# all_keys = [','.join(t['prediciton']) for t in predictions]
 
 def calculateConfidence(ls):
     unconfidence = 1
@@ -506,36 +642,30 @@ def calculatePrediction(prediction):
     tail = prediction['prediction'][2]
     pred = ','.join(prediction['prediction'])
     explanations = prediction['explanation']
-    
-    while True:
-        predictionData = search_subgraph(pred, dataset, True)
-        if 'abstract_edges' in predictionData:
-            break
-        print('retrying prediction: ', pred)
-        file_name = pred.replace('/', '+')
-        file_path = f"json/{dataset}/{file_name}.json"
-        os.remove(file_path)
 
-    abstract_edges = predictionData['abstract_edges']
-
-    headEdges = []
-    tailEdges = []
-    headEdgeAll = None
-    tailEdgeAll = None
+    # abstract_edges = predictionData['abstract_edges']
+    headExplanations = []
+    tailExplanations = []
+    Rh_all = 0
+    Rt_all = 0
     for d in explanations:
-        for e in abstract_edges:
-            if d['relation'] == e['relation'] and (e['source'] == head and d['perspective'] == 'head' or e['target'] == tail and d['perspective'] == 'tail'):
-                d.update(e)
         if d['perspective'] == 'head':
             if d['relation'] == 'all':
-                headEdgeAll = d
-            else:
-                headEdges.append(d)
+                Rh_all = d['score_reduction']
+            elif d['score_reduction'] > 0:
+                headExplanations.append(d)
         elif d['perspective'] == 'tail':
-            if d['relation'] == 'all':
-                tailEdgeAll = d
-            else:
-                tailEdges.append(d)
+            if d['relation'] != 'all':
+                Rt_all = d['score_reduction']
+            elif d['score_reduction'] > 0:
+                tailExplanations.append(d)
+
+    # 如果Rh_all < 0，那么考虑所有的head，不做过滤
+    head_constraints = set([e['relation'] for e in headExplanations]) if Rh_all > 0 else None
+    tail_constraints = set([e['relation'] for e in tailExplanations]) if Rt_all > 0 else None
+    print('head_constraints: ', head_constraints)
+    print('tail_constraints: ', tail_constraints)
+    predictionData = search_subgraph(pred, dataset, False, head_constraints, tail_constraints)
 
     facts_map = {}
     for k, v in predictionData['relation_path_map'].items():
@@ -543,97 +673,86 @@ def calculatePrediction(prediction):
         tailR = k.split(',')[-1]
         Rh = 0
         Rt = 0
-        for e in headEdges:
-            if e['relation'] == headR and 'score_deduction' in e:
-                Rh = e['score_deduction']
-        for e in tailEdges:
-            if e['relation'] == tailR and 'score_deduction' in e:
-                Rt = e['score_deduction']
+        for e in headExplanations:
+            if e['relation'] == headR and 'score_reduction' in e:
+                Rh = e['score_reduction']
+        for e in tailExplanations:
+            if e['relation'] == tailR and 'score_reduction' in e:
+                Rt = e['score_reduction']
 
         ret = {
             'id': k,
             'length': len(v),
             'paths': v,
             'Rh': Rh,
-            'Rt': Rt,
-            'R': Rh * Rt
+            'Rt': Rt
         }
-        if headEdgeAll['score_deduction'] < 0:
-            ret['R'] = Rt
-        if tailEdgeAll['score_deduction'] < 0:
-            ret['R'] = Rh
 
-        if CALCULATE_METRIC:
-            if ret['R'] > 0:
-                print('calculating rule metrics for ', k)
-                ret.update(calculate_rule_metrics(relation, k, dataset))
+        # Rh = 0 || Rt = 0 时不要紧，但是不能小于0
+        if Rh < 0 or Rt < 0 or (Rh == 0 and Rt == 0):
+            print('[calculatePrediction] low relevance rule, skipping: ', k, Rh, Rt)
+            continue
 
-                # if ret['SC'] < 0.1 or ret['HC'] < 0.01:
-                #     print('low quality rule, skipping: ', k)
-                #     continue
+        print('[calculatePrediction] calculating rule metrics ', relation, '<=', k)
+        ret.update(calculate_rule_metrics_with_matrix(relation, k, dataset))
 
-                ret['GA'] = geometricAverage([ret['SC'], ret['HC'], ret['R'] / 10000])
-                ret['RHC'] = geometricAverage([ret['HC'], ret['R'] / 10000])
-                ret['RSC'] = geometricAverage([ret['SC'], ret['R'] / 10000])
-                ret['HCSC'] = geometricAverage([ret['SC'], ret['HC']])
-                for p in ret['paths']:
-                    for t in predictionData['paths'][p]:
-                        if t in facts_map:
-                            facts_map[t]['SC'].append(ret['SC'])
-                            facts_map[t]['HC'].append(ret['HC'])
-                            facts_map[t]['R'].append(ret['R'] / 10000)
-                            facts_map[t]['GA'].append(ret['GA'])
-                            facts_map[t]['RHC'].append(ret['RHC'])
-                            facts_map[t]['RSC'].append(ret['RSC'])
-                            facts_map[t]['HCSC'].append(ret['HCSC'])
-                            facts_map[t]['#rule'] += 1
-                        else:
-                            facts_map[t] = {
-                                'ix': t,
-                                'triple': predictionData['triples'][t],
-                                'SC': [ret['SC']],
-                                'HC': [ret['HC']],
-                                'R': [ret['R'] / 10000],
-                                'GA': [ret['GA']],
-                                'RHC': [ret['RHC']],
-                                'RSC': [ret['RSC']],
-                                'HCSC': [ret['HCSC']],
-                                '#rule': 1
-                            }
-        else:
-            if ret['R'] > 0:
-                print('calculating rule metrics for ', k)
-                # if ret['SC'] < 0.1 or ret['HC'] < 0.01:
-                #     print('low quality rule, skipping: ', k)
-                #     continue
+        if ret['SC'] < 0.01:
+            print('[calculatePrediction] low quality rule, skipping: ', k, ret['SC'])
+            continue
 
-                for p in ret['paths']:
-                    for t in predictionData['paths'][p]:
-                        if t in facts_map:
-                            facts_map[t]['R'].append(ret['R'] / 10000)
-                            facts_map[t]['#rule'] += 1
-                        else:
-                            facts_map[t] = {
-                                'ix': t,
-                                'triple': predictionData['triples'][t],
-                                'R': [ret['R'] / 10000],
-                                '#rule': 1
-                            }
+        all_facts_ix = set()
+        for p in ret['paths']:
+            # all_facts_ix.update(predictionData['paths'][p])
+            path_indexs = predictionData['paths'][p]
+            all_facts_ix.add(path_indexs[0])
+            all_facts_ix.add(path_indexs[-1])
+        rule_weight = ret['SC'] / len(ret['id'].split(','))
 
-    for v in facts_map.values():
-        v['R'] = calculateConfidence(v['R'])
-        if CALCULATE_METRIC:
-            v['SC'] = calculateConfidence(v['SC'])
-            v['HC'] = calculateConfidence(v['HC'])
-            v['GA'] = calculateConfidence(v['GA'])
-            v['RHC'] = calculateConfidence(v['RHC'])
-            v['RSC'] = calculateConfidence(v['RSC'])
-            v['HCSC'] = calculateConfidence(v['HCSC'])
+        for t in all_facts_ix:
+            fact_in_rule_head = 0
+            fact_in_rule_tail = 0
+
+            for p in ret['paths']:
+                if predictionData['paths'][p][0] == t:
+                    fact_in_rule_head += 1
+                if predictionData['paths'][p][-1] == t:
+                    fact_in_rule_tail += 1
+
+            fact_in_rule_head_proportion = fact_in_rule_head / len(ret['paths'])
+            fact_in_rule_tail_proportion = fact_in_rule_tail / len(ret['paths'])
+            fact_importance = fact_in_rule_head_proportion * Rh + fact_in_rule_tail_proportion * Rt
+
+            if fact_importance <= 0:
+                print('[calculatePrediction] low importance fact in rule, skipping: ', t, fact_importance)
+                continue
+
+            if t not in facts_map:
+                facts_map[t] = {
+                    'ix': t,
+                    'triple': predictionData['triples'][t],
+                }
+
+            facts_map[t].setdefault('rules', []).append({
+                'id': ret['id'],
+                'head_proportion': fact_in_rule_head_proportion,
+                'tail_proportion': fact_in_rule_tail_proportion,
+                'Rh': ret['Rh'],
+                'Rt': ret['Rt'],
+                'SC': ret['SC'],
+                'importance': fact_importance,
+                'score': fact_importance * rule_weight
+            })
+            
+            facts_map[t]['score'] = facts_map[t].get('score', 0) + fact_importance * rule_weight
+
+    if len(facts_map) < 5:
+        existing_facts = set(facts_map.keys())
+        print('[calculatePrediction] too few facts, adding from paths: ')
+
+        
+
     extractedFacts = list(facts_map.values())
-    # sort by onfidence_SC, confidence_HC, rules.length in order
-    if CALCULATE_METRIC:
-        extractedFacts.sort(key=lambda x: (x['SC'], x['HC'], x['#rule']), reverse=True)
-
+    extractedFacts.sort(key=lambda x: x['score'], reverse=True)
     return extractedFacts
     
 def geometricAverage(ls):
@@ -663,21 +782,31 @@ def process_prediction(prediction):
     with open(filepath, 'w') as file:
         json.dump(result, file, cls=NumpyEncoder)
 
-# 创建多进程池，多线程真的不行
-with ProcessPoolExecutor() as executor:
-    futures = [executor.submit(process_prediction, prediction) for prediction in predictions]
-    for future in tqdm(as_completed(futures), total=len(predictions)):
-        future.result()  # 等待每个进程完成
+if __name__ == '__main__':
+    # process_prediction(predictions[20])
+    # os._exit(0)
+
+    # 创建多进程池，多线程真的不行
+    max_workers = int(os.cpu_count() * 0.8)
+    if args.dataset == 'YAGO3-10':
+        max_workers //= 5
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(process_prediction, prediction) for prediction in predictions]
+        for future in tqdm(as_completed(futures), total=len(predictions)):
+            future.result()  # 等待每个进程完成
 
 
-ret = {}
-for filename in os.listdir(output_path):
-    if filename.endswith('.json') and len(filename.split(',')) == 3:
-        with open(os.path.join(output_path, filename)) as f:
-            key = filename[:-5].replace('+', '/')
-            # 需要过滤掉不在output.json中的key
-            if key in all_keys:
-                ret[key] = json.load(f)
+    ret = {}
+    for filename in os.listdir(output_path):
+        if filename.endswith('.json') and len(filename.split(',')) == 3:
+            with open(os.path.join(output_path, filename)) as f:
+                key = filename[:-5].replace('+', '/')
+                # 需要过滤掉不在output.json中的key
+                if key in all_keys:
+                    ret[key] = json.load(f)
 
-with open(f'{args.path}/extractedFactsMap.json', 'w') as f:
-    json.dump(ret, f)
+    with open(f'{dir_path}/extractedFactsMap.json', 'w') as f:
+        json.dump(ret, f)
+
+
+# python process.py --dataset YAGO3-10 --model complex

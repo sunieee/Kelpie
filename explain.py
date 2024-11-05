@@ -172,9 +172,20 @@ class NumpyEncoder(json.JSONEncoder):
 start_time = time.time()
 
 all_explanation = []
+existing_facts = []
+
+output_path = f'out/{args.model}_{args.dataset}/output.json'
+# if os.path.exists(output_path):
+#     with open(output_path, 'r') as f:
+#         all_explanation = json.load(f)
+#     existing_facts = [','.join(x['prediction']) for x in all_explanation]
 
 total_count = len(testing_facts)
 for i, fact in enumerate(testing_facts[:total_count]):
+    if ','.join(fact) in existing_facts:
+        print(f"Fact {i + 1}/{total_count} already explained, skipping...")
+        continue
+
     head, relation, tail = fact
     print(f"Explaining fact {i + 1}/{total_count}: <{head}, {relation}, {tail}>")
     head_id, relation_id, tail_id = dataset.get_id_for_entity_name(head), dataset.get_id_for_relation_name(relation), dataset.get_id_for_entity_name(tail)
@@ -192,7 +203,7 @@ for i, fact in enumerate(testing_facts[:total_count]):
             # "max_length": max([len(x['triples']) for x in rule_samples_with_relevance])
         })
         # save the relation_list to a json file
-        with open(f'out/{args.model}_{args.dataset}/output.json', 'w') as f:
+        with open(output_path, 'w') as f:
             json.dump(all_explanation, f, cls=NumpyEncoder)
 
     else:
