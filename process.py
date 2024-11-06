@@ -139,6 +139,7 @@ def calculate_rule_metrics_with_matrix(head_rel, body_relations, dataset):
         filename = filename[::2]
     file_path = f"json/{dataset}/{head_rel.replace('/', '_')}/{filename}.json"
 
+    st = time.time()
     data = read_dateset(dataset)
     # Read triples and build matrices for the training set
     train_rel_to_matrix = data['relation_to_matrix']
@@ -190,7 +191,7 @@ def calculate_rule_metrics_with_matrix(head_rel, body_relations, dataset):
         'SC': SC
     }
 
-    print(f"Total Time: {time.time() - t}")
+    print(f"Total Time: {time.time() - st}")
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, 'w') as f:
         json.dump(ret, f)
@@ -269,8 +270,7 @@ def calculate_rule_metrics(head_rel, body_relations, dataset):
     return ret
 
 
-def find_paths_bfs(head_to_triples, tail_to_triples, head_id, tail_id, 
-                   max_length=3, head_constraints=None, tail_constraints=None):
+def find_paths_bfs(head_to_triples, tail_to_triples, head_id, tail_id, max_length=3):
     # 使用BFS进行路径搜索
     paths = []
     queue = deque([(head_id, [])])  # 队列中存储当前节点和路径
@@ -290,45 +290,29 @@ def find_paths_bfs(head_to_triples, tail_to_triples, head_id, tail_id,
         
         # 从head映射中找到所有以current_id为head的三元组
         for triple in head_to_triples.get(current_id, set()):
-            if head_constraints is not None:
-                if len(current_path) == 0 and triple.split(',')[1] in head_constraints:
-                    continue
-
             t = triple.split(',')[2]
             if t not in visited:  # triple[2] 是 tail
                 queue.append((t, current_path + [triple]))
         
         # 从tail映射中找到所有以current_id为tail的三元组（反向边）
         for triple in tail_to_triples.get(current_id, set()):
-            if head_constraints is not None:
-                if len(current_path) == 0 and triple.split(',')[1] + "'" in head_constraints:
-                    continue
-
             t = triple.split(',')[0]
             if t not in visited:  # triple[0] 是 head
                 queue.append((t, current_path + [triple]))
 
-    if tail_constraints is not None:
-        filtered_paths = []
-        for path in paths:
-            relation = path[-1].split(',')[1]
-            if path[-1].split(',')[0] == tail_id:
-                relation += "'"
-            if relation in tail_constraints:
-                filtered_paths.append(path)
-        return filtered_paths
     return paths
 
 
-def search_subgraph(prediction, dataset, condense=False, head_constraints=None, tail_constraints=None):
-    # file_name = prediction.replace('/', '+')
-    # file_path = f"json/{dataset}/{file_name}.json"
+def search_subgraph(prediction, dataset, condense=False):
+    file_name = prediction.replace('/', '+')
+    file_path = f"json/{dataset}/{file_name}.json"
 
-    # if os.path.exists(file_path):
-    #     with open(file_path, 'r') as f:
-    #         ret = json.load(f)
-    #         if len(ret['paths']) >= 10:
-    #             return ret
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as f:
+            ret = json.load(f)
+            if len(ret['paths']) >= 20:
+                return ret
+
         
     data = read_triples(dataset)
     head_to_triples = data['head_to_triples']
@@ -338,12 +322,11 @@ def search_subgraph(prediction, dataset, condense=False, head_constraints=None, 
     # 使用BFS查找路径
     max_length = 3
     while True:
-        paths = find_paths_bfs(head_to_triples, tail_to_triples, head, tail, 
-                               max_length=max_length, head_constraints=head_constraints, tail_constraints=tail_constraints)
+        paths = find_paths_bfs(head_to_triples, tail_to_triples, head, tail, max_length=max_length)
         print(f'[{prediction}]', 'max_length: ', max_length, 'path count: ', len(paths))
         max_length += 1 
         # 注意这里修改了最低限制，避免搜索长度太短！ WN18需要重新跑
-        if len(paths) >= 10 or max_length > 6:
+        if len(paths) >= 20 or max_length > 5:
             break
 
     # Collect unique triples used in paths
@@ -386,9 +369,9 @@ def search_subgraph(prediction, dataset, condense=False, head_constraints=None, 
     if condense:
         ret.update(condense_graph(ret))
 
-    # os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    # with open(file_path, 'w') as f:
-    #     json.dump(ret, f)
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, 'w') as f:
+        json.dump(ret, f)
     return ret
 
 
@@ -642,30 +625,30 @@ def calculatePrediction(prediction):
     tail = prediction['prediction'][2]
     pred = ','.join(prediction['prediction'])
     explanations = prediction['explanation']
+    
+    # while True:
+    #     predictionData = search_subgraph(pred, dataset, False)
+    #     if 'abstract_edges' in predictionData:
+    #         break
+    #     print('retrying prediction: ', pred)
+    #     file_name = pred.replace('/', '+')
+    #     file_path = f"json/{dataset}/{file_name}.json"
+    #     os.remove(file_path)
+    predictionData = search_subgraph(pred, dataset, False)
 
     # abstract_edges = predictionData['abstract_edges']
-    headExplanations = []
-    tailExplanations = []
-    Rh_all = 0
-    Rt_all = 0
+    headEdges = []
+    tailEdges = []
     for d in explanations:
+        # for e in abstract_edges:
+        #     if d['relation'] == e['relation'] and (e['source'] == head and d['perspective'] == 'head' or e['target'] == tail and d['perspective'] == 'tail'):
+        #         d.update(e)
         if d['perspective'] == 'head':
-            if d['relation'] == 'all':
-                Rh_all = d['score_reduction']
-            elif d['score_reduction'] > 0:
-                headExplanations.append(d)
+            if d['relation'] != 'all':
+                headEdges.append(d)
         elif d['perspective'] == 'tail':
             if d['relation'] != 'all':
-                Rt_all = d['score_reduction']
-            elif d['score_reduction'] > 0:
-                tailExplanations.append(d)
-
-    # 如果Rh_all < 0，那么考虑所有的head，不做过滤
-    head_constraints = set([e['relation'] for e in headExplanations]) if Rh_all > 0 else None
-    tail_constraints = set([e['relation'] for e in tailExplanations]) if Rt_all > 0 else None
-    print('head_constraints: ', head_constraints)
-    print('tail_constraints: ', tail_constraints)
-    predictionData = search_subgraph(pred, dataset, False, head_constraints, tail_constraints)
+                tailEdges.append(d)
 
     facts_map = {}
     for k, v in predictionData['relation_path_map'].items():
@@ -673,10 +656,10 @@ def calculatePrediction(prediction):
         tailR = k.split(',')[-1]
         Rh = 0
         Rt = 0
-        for e in headExplanations:
+        for e in headEdges:
             if e['relation'] == headR and 'score_reduction' in e:
                 Rh = e['score_reduction']
-        for e in tailExplanations:
+        for e in tailEdges:
             if e['relation'] == tailR and 'score_reduction' in e:
                 Rt = e['score_reduction']
 
@@ -709,17 +692,17 @@ def calculatePrediction(prediction):
         rule_weight = ret['SC'] / len(ret['id'].split(','))
 
         for t in all_facts_ix:
-            fact_in_rule_head = 0
-            fact_in_rule_tail = 0
+            fact_in_path_head = 0
+            fact_in_path_tail = 0
 
             for p in ret['paths']:
                 if predictionData['paths'][p][0] == t:
-                    fact_in_rule_head += 1
+                    fact_in_path_head += 1
                 if predictionData['paths'][p][-1] == t:
-                    fact_in_rule_tail += 1
+                    fact_in_path_tail += 1
 
-            fact_in_rule_head_proportion = fact_in_rule_head / len(ret['paths'])
-            fact_in_rule_tail_proportion = fact_in_rule_tail / len(ret['paths'])
+            fact_in_rule_head_proportion = fact_in_path_head / len(ret['paths'])
+            fact_in_rule_tail_proportion = fact_in_path_tail / len(ret['paths'])
             fact_importance = fact_in_rule_head_proportion * Rh + fact_in_rule_tail_proportion * Rt
 
             if fact_importance <= 0:
@@ -745,10 +728,43 @@ def calculatePrediction(prediction):
             
             facts_map[t]['score'] = facts_map[t].get('score', 0) + fact_importance * rule_weight
 
+    # 这里需要补充一些fact，以保证fact数量达到5个
+    # 使用的方法：
+    # 1. 按照score_reduction对relation进行从高到低排序
+    alpha = 0.05
     if len(facts_map) < 5:
         existing_facts = set(facts_map.keys())
+        minScore = min([f['score'] for f in facts_map.values()])
         print('[calculatePrediction] too few facts, adding from paths: ')
+        all_facts_ix = set()
+        for p in predictionData['paths']:
+            path_indexs = predictionData['paths'][p]
+            all_facts_ix.add(path_indexs[0])
+            all_facts_ix.add(path_indexs[-1])
 
+        for t in all_facts_ix:
+            if t in existing_facts:
+                continue
+
+            fact_in_path_head = 0
+            fact_in_path_tail = 0
+            for p in predictionData['paths']:
+                lp = len(predictionData['paths'][p])
+                if predictionData['paths'][p][0] == t:
+                    fact_in_path_head += 1/lp
+                if predictionData['paths'][p][-1] == t:
+                    fact_in_path_tail += 1/lp
+
+            # 加权路径频率
+            head_proportion = fact_in_path_head / len(predictionData['paths'])
+            tail_proportion = fact_in_path_tail / len(predictionData['paths'])
+            facts_map[t] = {
+                'ix': t,
+                'triple': predictionData['triples'][t],
+                'head_proportion': head_proportion,
+                'tail_proportion': tail_proportion,
+                'score': minScore * (head_proportion + tail_proportion)
+            }
         
 
     extractedFacts = list(facts_map.values())
@@ -783,8 +799,8 @@ def process_prediction(prediction):
         json.dump(result, file, cls=NumpyEncoder)
 
 if __name__ == '__main__':
-    # process_prediction(predictions[20])
-    # os._exit(0)
+    process_prediction(predictions[0])
+    os._exit(0)
 
     # 创建多进程池，多线程真的不行
     max_workers = int(os.cpu_count() * 0.8)
