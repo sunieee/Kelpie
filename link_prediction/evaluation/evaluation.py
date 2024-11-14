@@ -19,7 +19,7 @@ class Evaluator:
         # batch_size = 500 
         # still too large! torch.OutOfMemoryError: CUDA out of memory. 
         # Tried to allocate 45.88 GiB. GPU 0 has a total capacity of 23.59 GiB of which 22.70 GiB is free.torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 45.88 GiB. GPU 0 has a total capacity of 23.59 GiB of which 22.70 GiB is free.
-        batch_size = 200 if self.dataset.name == 'YAGO3-10' else 500
+        batch_size = 100 if self.dataset.name == 'YAGO3-10' else 500
         print(f'[evaluate] batch_size: {batch_size}', 'model:', self.model, 'dataset:', self.dataset.name, '#samples:', len(samples))
         if len(samples) > batch_size and isinstance(self.model, TransE):
             scores, ranks, predictions = [], [], []

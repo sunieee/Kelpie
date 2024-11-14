@@ -9,7 +9,7 @@ for dataset in FB15k WN18 FB15k-237 WN18RR YAGO3-10; do
     
     python3 verify.py --dataset "$dataset" --model complex --metric R --topN 4 > "${output_dir}/verify_R4.log"
     python3 verify.py --dataset "$dataset" --model complex --metric GA --topN 4 > "${output_dir}/verify_GA4.log"
-    python3 verify.py --dataset "$dataset" --model complex --metric R --filter head --topN 4 > "${output_dir}/verify_R4.head.log"
+    python3 verify.py --dataset "$dataset" --model complex --metric R --filter head --topN 4 > "${output_dir}/verify_R_h4.log"
 done
 
 
@@ -24,7 +24,7 @@ for dataset in FB15k WN18 FB15k-237 WN18RR YAGO3-10; do
     
     python3 verify.py --dataset "$dataset" --model conve --metric R --topN 4 > "${output_dir}/verify_R4.log"
     python3 verify.py --dataset "$dataset" --model conve --metric GA --topN 4 > "${output_dir}/verify_GA4.log"
-    python3 verify.py --dataset "$dataset" --model conve --metric R --filter head --topN 4 > "${output_dir}/verify_R4.head.log"
+    python3 verify.py --dataset "$dataset" --model conve --metric R --filter head --topN 4 > "${output_dir}/verify_R_h4.log"
 done
 
 
@@ -38,7 +38,7 @@ for dataset in FB15k WN18 FB15k-237 WN18RR YAGO3-10; do
     
     python3 verify.py --dataset "$dataset" --model transe --metric R --topN 4 > "${output_dir}/verify_R4.log"
     python3 verify.py --dataset "$dataset" --model transe --metric GA --topN 4 > "${output_dir}/verify_GA4.log"
-    python3 verify.py --dataset "$dataset" --model transe --metric R --filter head --topN 4 > "${output_dir}/verify_R4.head.log"
+    python3 verify.py --dataset "$dataset" --model transe --metric R --filter head --topN 4 > "${output_dir}/verify_R_h4.log"
 done
 
 

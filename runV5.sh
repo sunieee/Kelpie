@@ -6,11 +6,11 @@ run() {
     output_dir="out/${model}_${dataset}"
     mkdir -p "$output_dir"
 
-    CUDA_VISIBLE_DEVICES=${device} python3 explain.py --dataset "$dataset" --model ${model} --baseline k1_abstract --perspective double  > "${output_dir}/explain.log"  2>&1
     CUDA_VISIBLE_DEVICES=${device} python3 process.py --dataset "$dataset" --model "$model" > "${output_dir}/process.log"  2>&1
 
     CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric score --topN 4 > "${output_dir}/verify_score4.log"
     CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric score --topN 4 --filter head > "${output_dir}/verify_score_h4.log"
+    CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric score --topN 4 --filter tail > "${output_dir}/verify_score_t4.log"
 }
 
 
@@ -44,7 +44,7 @@ get_available_device() {
 rm -f out/0
 rm -f out/1
 
-for model in complex conve transe; do
+for model in transe; do
     for dataset in FB15k WN18 FB15k-237 WN18RR; do
         device=$(get_available_device)
         runWrap $model $dataset $device &
@@ -57,8 +57,5 @@ for model in complex conve transe; do
 done
 
 wait  # 等待所有进程完成
-
-#  YAGO3-10 太慢了，不跑了
-
 
 

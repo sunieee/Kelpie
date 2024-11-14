@@ -4,38 +4,39 @@ from collections import defaultdict
 import pandas as pd
 
 
+# base_dir = 'out(alpha=0.05)'
+base_dir = 'out(gamma=1.0)'
 folders = []
 for model in ['complex', 'conve', 'transe']:
     for dataset in ['FB15k', 'WN18', 'FB15k-237', 'WN18RR']:    # , 'YAGO3-10'
         folder = f'{model}_{dataset}'
         folders.append(folder)
         
-rx = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score4', 'score4.head'])
-rx_h = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score4', 'score4.head'])
-rx_t = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score4', 'score4.head'])
-rx_subset = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score4', 'score4.head'])
-rx_subset_h = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score4', 'score4.head'])
-rx_subset_t = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score4', 'score4.head'])
+rx = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score', 'score_h', 'score_t'])
+rx_h = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score', 'score_h', 'score_t'])
+rx_t = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score', 'score_h', 'score_t'])
+rx_subset = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score', 'score_h', 'score_t'])
+rx_subset_h = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score', 'score_h', 'score_t'])
+rx_subset_t = pd.DataFrame(0, columns=folders, index=['data_poisoning', 'criage', 'k1', 'kelpie', 'score', 'score_h', 'score_t'])
 
 
 def process(folder):
     file = f'output_end_to_end_score4.json'
     valid_predictions = []
-    if os.path.exists(f'out/{folder}/{file}'):
-        with open(f'out/{folder}/{file}', 'r') as f:
+    if os.path.exists(f'{base_dir}/{folder}/{file}'):
+        with open(f'{base_dir}/{folder}/{file}', 'r') as f:
             data = json.load(f)
             base_prediction2data = {','.join(t['prediction']) :t for t in data if 'prediction' in t}
-            valid_predictions = [k for k, v in base_prediction2data.items() if len(v['explanation'][0]['triples']) > 3]
+            valid_predictions = [k for k, v in base_prediction2data.items() if v['dMRR'] > 0.1]
 
-    for setting in ['data_poisoning', 'criage', 'k1', 'kelpie', 'score4', 'score4.head']:
-        suffix = setting + '4' if setting in ['data_poisoning', 'criage', 'k1', 'kelpie'] else setting
-        file = f'output_end_to_end_{suffix}.json'
-        if not os.path.exists(f'out/{folder}/{file}'):
-            print(f'out/{folder}/{file} not exists')
+    for setting in ['data_poisoning', 'criage', 'k1', 'kelpie', 'score', 'score_h', 'score_t']:
+        file = f'output_end_to_end_{setting}4.json'
+        if not os.path.exists(f'{base_dir}/{folder}/{file}'):
+            print(f'{base_dir}/{folder}/{file} not exists')
             continue
         
         print('processing', folder, setting)
-        with open(f'out/{folder}/{file}', 'r') as f:
+        with open(f'{base_dir}/{folder}/{file}', 'r') as f:
             data = json.load(f)
             prediction2data = {','.join(t['prediction']) :t for t in data if 'prediction' in t}
 
@@ -86,9 +87,9 @@ def process(folder):
 for folder in folders:
     process(folder)
 
-rx.to_csv('out/rx.csv')
-rx_subset.to_csv('out/rx_subset.csv')
-rx_h.to_csv('out/rx_h.csv')
-rx_subset_h.to_csv('out/rx_subset_h.csv')
-rx_t.to_csv('out/rx_t.csv')
-rx_subset_t.to_csv('out/rx_subset_t.csv')
+rx.to_csv(f'{base_dir}/rx.csv')
+rx_subset.to_csv(f'{base_dir}/rx_subset.csv')
+rx_h.to_csv(f'{base_dir}/rx_h.csv')
+rx_subset_h.to_csv(f'{base_dir}/rx_subset_h.csv')
+rx_t.to_csv(f'{base_dir}/rx_t.csv')
+rx_subset_t.to_csv(f'{base_dir}/rx_subset_t.csv')

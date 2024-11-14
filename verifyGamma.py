@@ -8,6 +8,7 @@ import torch
 import json
 import numpy as np
 import time
+from gurobi_test import optimize_index
 
 sys.path.append(
     os.path.realpath(os.path.join(os.path.abspath(__file__), os.path.pardir, os.path.pardir, os.path.pardir)))
@@ -73,6 +74,7 @@ parser.add_argument('--metric', type=str, default='GA')
 parser.add_argument('--topN', type=int, default=4)
 parser.add_argument('--filter', type=str, choices=FILTER_CHOICES, default='none')
 parser.add_argument('--regularizer_weight', type=float, default=0.0, help="Regularizer weight")
+parser.add_argument('--gamma', type=float, default=0.0, help="Rel weight")
 
 args = parser.parse_args()
 config = read_yaml("config.yaml")
@@ -94,100 +96,59 @@ print(f"Loading dataset {args.dataset}...")
 dataset = Dataset(name=args.dataset, separator="\t", load=True)
 
 # Read explanations from the output file
-map_path = f'out/{args.model}_{args.dataset}/extractedFactsMap.json'
-if args.metric in ['kelpie', 'criage', 'data_poisoning', 'k1']:
-    dirname = os.path.join('results', 'necessary', args.metric, 
-                           args.dataset.lower().replace('3-10', '').replace('-', ''), args.model.lower())
-    if args.metric == 'kelpie':
-        dirname = os.path.join(dirname, f"threshold_5")
-    if not os.path.exists(f"{dirname}/output.txt"):
-        print(f"Output file not found: {dirname}/output.txt")
-        sys.exit(1)
+map_path = f'out(gamma={args.gamma})/{args.model}_{args.dataset}/extractedFactsMap.json'
+topN = args.topN
+metric = args.metric
+with open(map_path, "r") as input_file:
+    extractedFactsMap = json.load(input_file)
 
-    with open(f"{dirname}/output.txt", "r") as input_file:
-        input_lines = input_file.readlines()
+if args.filter != 'none':
+    removed_keys = []
+    for k, v in extractedFactsMap.items():
+        if len(k.split(',')) != 3:
+            print('invalid fact:', k)
+            removed_keys.append(k)
+            continue
 
-    data = []
-    for i in range(0, len(input_lines), 3):
-        fact_line = input_lines[i]
-        rules_line = input_lines[i + 1]
-        empty_line = input_lines[i + 2]
+        h = k.split(',')[0]
+        t = k.split(',')[2]
+        headCount = len([x for x in v if h in x['triple']])
+        tailCount = len([x for x in v if t in x['triple']])
+        if args.filter == 'head' or (args.filter =='greater' and headCount > tailCount):
+            extractedFactsMap[k] = [x for x in v if h in x['triple']]
+        elif args.filter == 'tail' or (args.filter =='greater' and tailCount > headCount):
+            extractedFactsMap[k] = [x for x in v if t in x['triple']]
+        elif args.filter == 'ht':
+            extractedFactsMap[k] = [x for x in v if h in x['triple'] or t in x['triple']]
 
-        prediction = fact_line.strip().strip(';').split(";")
-        rule_relevance_inputs = rules_line.strip().split(",")
-        best_rule, best_rule_relevance_str = rule_relevance_inputs[0].split(":")
-        best_rule = best_rule.split(";")
-        best_rule_relevance_str=best_rule_relevance_str.strip('[').strip(']')
+    for k in removed_keys:
+        extractedFactsMap.pop(k)
 
-        # print('processing:', prediction, best_rule, best_rule_relevance_str)
+data = []
+for fact, explanation in extractedFactsMap.items():
+    print('processing:', fact, 'total length:', len(explanation))
+    # asssert explanation is a list
+    assert isinstance(explanation, list)
+    explanation = sorted(explanation, key=lambda x: x[metric], reverse=True)
+        
+    if args.gamma == 0:
         data.append({
-            "prediction": prediction,
+            "prediction": fact.split(","),
             "explanation": [{
-                "perspective": "head",
-                "triples": [','.join([best_rule[ix], best_rule[ix+1], best_rule[ix+2]]) for ix in range(0, len(best_rule), 3)],
-                "relevance": float(best_rule_relevance_str)
+                'triples': [t['triple'] for t in explanation[:topN]],
+                'relevance': np.sum([t[metric] for t in explanation[:topN]])
             }]
         })
-
-elif os.path.exists(map_path):
-    topN = args.topN
-    metric = args.metric
-    with open(map_path, "r") as input_file:
-        extractedFactsMap = json.load(input_file)
-    
-    if args.filter != 'none':
-        removed_keys = []
-        for k, v in extractedFactsMap.items():
-            if len(k.split(',')) != 3:
-                print('invalid fact:', k)
-                removed_keys.append(k)
-                continue
-
-            h = k.split(',')[0]
-            t = k.split(',')[2]
-            headCount = len([x for x in v if h in x['triple']])
-            tailCount = len([x for x in v if t in x['triple']])
-            if args.filter == 'head' or (args.filter =='greater' and headCount > tailCount):
-                extractedFactsMap[k] = [x for x in v if h in x['triple']]
-            elif args.filter == 'tail' or (args.filter =='greater' and tailCount > headCount):
-                extractedFactsMap[k] = [x for x in v if t in x['triple']]
-            elif args.filter == 'ht':
-                extractedFactsMap[k] = [x for x in v if h in x['triple'] or t in x['triple']]
-
-        for k in removed_keys:
-            extractedFactsMap.pop(k)
-
-    data = []
-    for fact, explanation in extractedFactsMap.items():
-        if '+' in metric:
-            triples = []
-            for m in metric.split('+'):
-                explanation = sorted(explanation, key=lambda x: x[m], reverse=True)
-                triples += [t['triple'] for t in explanation[:topN]]
-            data.append({
-                "prediction": fact.split(","),
-                "explanation": [{
-                    'triples': triples,
-                    'relevance': np.mean([t[m] for t in explanation[:topN]])
-                }]
-            })
-            
-        else:
-            print('processing:', fact, 'total length:', len(explanation))
-            # asssert explanation is a list
-            assert isinstance(explanation, list)
-            explanation = sorted(explanation, key=lambda x: x[metric], reverse=True)
-            data.append({
-                "prediction": fact.split(","),
-                "explanation": [{
-                    'triples': [t['triple'] for t in explanation[:topN]],
-                    'relevance': np.mean([t[metric] for t in explanation[:topN]])
-                }]
-            })
-elif os.path.exists('output.json'):
-    with open("output.json", "r") as input_file:
-        data = json.load(input_file)
-    
+    else:
+        indexs, relevance = optimize_index(explanation, args.gamma)
+        print('indexs:', indexs)
+        data.append({
+            "prediction": fact.split(","),
+            "explanation": [{
+                'triples': [explanation[i]['triple'] for i in indexs],
+                'relevance': relevance
+            }]
+        })
 
 
 # Define model-specific parameters
@@ -309,7 +270,7 @@ class NumpyEncoder(json.JSONEncoder):
 
 
 suffix = f'_{args.filter[0]}' if args.filter != 'none' else ''
-with open(f"out/{args.model}_{args.dataset}/output_end_to_end_{args.metric}{suffix}{args.topN}.json", "w") as outfile:
+with open(f"out(gamma={args.gamma})/{args.model}_{args.dataset}/output_end_to_end_{args.metric}{suffix}{args.topN}.json", "w") as outfile:
     json.dump(data, outfile, indent=4, cls=NumpyEncoder)
 
 print('Required time: ', time.time() - t, ' seconds')
@@ -326,5 +287,5 @@ data.append({
     'new_h10': new_h10,
     'new_mr': new_mr
 })
-with open(f"out/{args.model}_{args.dataset}/output_end_to_end_{args.metric}{suffix}{args.topN}.json", "w") as outfile:
+with open(f"out(gamma={args.gamma})/{args.model}_{args.dataset}/output_end_to_end_{args.metric}{suffix}{args.topN}.json", "w") as outfile:
     json.dump(data, outfile, indent=4, cls=NumpyEncoder)
