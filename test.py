@@ -67,7 +67,7 @@ def evaluate():
     os.rename('filtered_ranks.csv', os.path.join(args.output_folder, 'filtered_ranks.csv'))
     os.rename('filtered_details.csv', os.path.join(args.output_folder, 'filtered_details.csv'))
 
-# evaluate()
+evaluate()
 print("Generating facts to explain (prediction that ranks first)...")
 lis = []
 print("{:^30}\t{:^15}\t{:^15}".format('relation', '#triples', '#top_triples'))

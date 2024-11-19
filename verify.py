@@ -73,6 +73,8 @@ parser.add_argument('--metric', type=str, default='GA')
 parser.add_argument('--topN', type=int, default=4)
 parser.add_argument('--filter', type=str, choices=FILTER_CHOICES, default='none')
 parser.add_argument('--regularizer_weight', type=float, default=0.0, help="Regularizer weight")
+parser.add_argument('--ablation', type=str, default='1111', help="Ablation study: CP, Uc, Ud, EXP")
+
 
 args = parser.parse_args()
 config = read_yaml("config.yaml")
@@ -94,8 +96,9 @@ print(f"Loading dataset {args.dataset}...")
 dataset = Dataset(name=args.dataset, separator="\t", load=True)
 
 # Read explanations from the output file
-map_path = f'out/{args.model}_{args.dataset}/extractedFactsMap.json'
-if args.metric in ['kelpie', 'criage', 'data_poisoning', 'k1']:
+ablation_suffix = '_' + args.ablation if  args.ablation != '1111' else ''
+map_path = f'out/{args.model}_{args.dataset}/extractedFactsMap{ablation_suffix}.json'
+if args.metric in ['kelpie', 'criage', 'data_poisoning', 'k1', 'AnyBurlAttack']:
     dirname = os.path.join('results', 'necessary', args.metric, 
                            args.dataset.lower().replace('3-10', '').replace('-', ''), args.model.lower())
     if args.metric == 'kelpie':
@@ -111,7 +114,10 @@ if args.metric in ['kelpie', 'criage', 'data_poisoning', 'k1']:
     for i in range(0, len(input_lines), 3):
         fact_line = input_lines[i]
         rules_line = input_lines[i + 1]
-        empty_line = input_lines[i + 2]
+        try:
+            empty_line = input_lines[i + 2]
+        except:
+            print('empty line not found', dirname, i)
 
         prediction = fact_line.strip().strip(';').split(";")
         rule_relevance_inputs = rules_line.strip().split(",")
@@ -131,7 +137,7 @@ if args.metric in ['kelpie', 'criage', 'data_poisoning', 'k1']:
 
 elif os.path.exists(map_path):
     topN = args.topN
-    metric = args.metric
+    metric = args.metric if args.metric != 'eXpath' else 'score'
     with open(map_path, "r") as input_file:
         extractedFactsMap = json.load(input_file)
     
@@ -237,7 +243,12 @@ for rule_relevance_inputs in data:
     sample = (dataset.entity_name_2_id[fact[0]], dataset.relation_name_2_id[fact[1]], dataset.entity_name_2_id[fact[2]])
     samples_to_explain.append(sample)
 
-    best_rule_samples = [dataset.fact_to_sample(x.split(',')) for x in rule_relevance_inputs['explanation'][0]['triples']]
+    best_rule_samples = []
+    for x in rule_relevance_inputs['explanation'][0]['triples']:
+        try:
+            best_rule_samples.append(dataset.fact_to_sample(x.split(',')))
+        except:
+            print('invalid triple:', x)
     relevance = rule_relevance_inputs['explanation'][0]['relevance']
     rules_with_relevance.append((best_rule_samples, relevance))
     sample_to_explain_2_best_rule[sample] = best_rule_samples
@@ -250,7 +261,7 @@ for sample_to_explain in samples_to_explain:
 
 new_dataset = copy.deepcopy(dataset)
 
-print("Removing samples: ")
+print("Removing samples: ", len(samples_to_remove))
 for (head, relation, tail) in samples_to_remove:
     print("\t" + dataset.printable_sample((head, relation, tail)))
 
@@ -326,5 +337,14 @@ data.append({
     'new_h10': new_h10,
     'new_mr': new_mr
 })
+
+suffix = ''
+if args.filter != 'none':
+    suffix += args.filter[0]
+if args.ablation != '1111':
+    suffix += args.ablation
+if args.metric == 'eXpath':
+    suffix = '(' + suffix + ')'
+
 with open(f"out/{args.model}_{args.dataset}/output_end_to_end_{args.metric}{suffix}{args.topN}.json", "w") as outfile:
     json.dump(data, outfile, indent=4, cls=NumpyEncoder)

@@ -1,3 +1,25 @@
+# prepare data
+# mkdir AnyBurlAttack
+# for model in complex conve transe; do
+#     for dataset in FB15k WN18 FB15k-237 WN18RR; do
+#         mkdir -p AnyBurlAttack/${model}_${dataset}
+#         # filename = model.lower() + dataset.lower().replace('-237', '237') + '_random.csv'
+#         filename=$(echo "${model}" | tr '[:upper:]' '[:lower:]')_$(echo "${dataset}" | tr '[:upper:]' '[:lower:]' | sed 's/-237/237/')"_random.csv"
+#         echo "$filename"
+
+#         cp input_facts/${filename} AnyBurlAttack/${model}_${dataset}/target.txt
+#     done
+# done
+    
+# run attack
+# for model in complex conve transe; do
+#     for dataset in FB15k WN18 FB15k-237 WN18RR; do
+#         java -cp AnyBURL-ATTACK.jar x.y.z.attack.Explain AnyBurlAttack/${model}_${dataset}  data/${dataset}
+#     done
+# done
+
+# run verify
+
 run() {
     model=$1
     dataset=$2
@@ -6,11 +28,9 @@ run() {
     output_dir="out/${model}_${dataset}"
     mkdir -p "$output_dir"
 
-    CUDA_VISIBLE_DEVICES=${device} python3 process.py --dataset "$dataset" --model "$model" > "${output_dir}/process.log"  2>&1
-
-    CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric score --topN 4 > "${output_dir}/verify_score4.log"
-    # CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric score --topN 4 --filter head > "${output_dir}/verify_score_h4.log"
-    # CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric score --topN 4 --filter tail > "${output_dir}/verify_score_t4.log"
+    metric=AnyBurlAttack
+    echo "Processing Baseline ${model} ${dataset} ${metric}"
+    CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric "$metric" > "${output_dir}/verify_${metric}.log"
 }
 
 
@@ -57,5 +77,3 @@ for model in complex conve transe; do
 done
 
 wait  # 等待所有进程完成
-
-

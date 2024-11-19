@@ -166,6 +166,8 @@ def calculate_rule_metrics_with_matrix(head_rel, body_relations, dataset):
         body_matrix = body_matrix.dot(next_matrix)  # 直接点乘
         body_matrix.data = np.ones_like(body_matrix.data)  # 二值化
         # body_matrix = (body_matrix > 0).astype(int)
+        # 加入 Object Identity 约束：对角线置零
+        body_matrix.setdiag(0)
         print(f'time: {time.time() - t}')
 
     # Calculate body count: number of non-zero entries in the matrix, not np.sum, because elements are not binary
@@ -189,8 +191,8 @@ def calculate_rule_metrics_with_matrix(head_rel, body_relations, dataset):
 
     ret = {
         'supp': supp,
-        'body': body_count,
-        'head': head_count,
+        '#body': body_count,
+        '#head': head_count,
         'HC': HC,
         'SC': SC
     }
@@ -260,8 +262,8 @@ def calculate_rule_metrics(head_rel, body_relations, dataset):
 
     ret = {
         'supp': supp,
-        'body': body_count,
-        'head': head_count,
+        '#body': body_count,
+        '#head': head_count,
         'HC': HC,
         'SC': SC
     }
@@ -740,6 +742,7 @@ def calculatePrediction(prediction):
             fact_in_rule_head_proportion = fact_in_path_head / len(ret['paths'])
             fact_in_rule_tail_proportion = fact_in_path_tail / len(ret['paths'])
             fact_importance = fact_in_rule_head_proportion * Rh + fact_in_rule_tail_proportion * Rt
+            fact_importance /= Rh + Rt
 
             if fact_importance <= 0:
                 print('[calculatePrediction] low importance fact in rule, skipping: ', t, fact_importance)
@@ -752,6 +755,7 @@ def calculatePrediction(prediction):
                     'triple': triple,
                 }
 
+            score = fact_importance * rule_weight
             facts_map[triple].setdefault('rules', []).append({
                 'id': ret['id'],
                 'head_proportion': fact_in_rule_head_proportion,
@@ -760,10 +764,11 @@ def calculatePrediction(prediction):
                 'Rt': ret['Rt'],
                 'SC': ret['SC'],
                 'importance': fact_importance,
-                'score': fact_importance * rule_weight
+                'score': score,
             })
             
-            facts_map[triple]['score'] = facts_map[triple].get('score', 0) + fact_importance * rule_weight
+            # facts_map[triple]['score'] = facts_map[triple].get('score', 0) + fact_importance * rule_weight
+            facts_map[triple].setdefault('scores', []).append(score)
 
     # 这里需要补充一些fact，以保证fact数量达到5个
     # 使用的方法：
@@ -786,8 +791,9 @@ def calculatePrediction(prediction):
                             'triple': triple
                         }
                     score = 1 / explanation['length'] / len(triples)
-                    facts_map[triple]['score'] = facts_map[triple].get('score', 0) + score
-    
+                    # facts_map[triple]['score'] = facts_map[triple].get('score', 0) + score
+                    facts_map[triple].setdefault('scores', []).append(score)
+
     for explanation in prediction2explanations[pred]:
         if explanation['relation'] == 'all':
             continue
@@ -805,8 +811,12 @@ def calculatePrediction(prediction):
             score = alpha * explanation['score_reduction'] / len(explanation['triples'])
             explanation['score'] = score
             facts_map[triple].setdefault('explanations', []).append(explanation)
-            facts_map[triple]['score'] = facts_map[triple].get('score', 0) + score
+            # facts_map[triple]['score'] = facts_map[triple].get('score', 0) + score
+            facts_map[triple].setdefault('scores', []).append(score)
 
+    for triple in facts_map:
+        # facts_map[triple]['score'] = calculateConfidence(facts_map[triple]['scores'])
+        facts_map[triple]['score'] = sum(facts_map[triple]['scores'])
     extractedFacts = list(facts_map.values())
     extractedFacts.sort(key=lambda x: x['score'], reverse=True)
     # print(extractedFacts)
@@ -837,7 +847,7 @@ def process_prediction(prediction):
     
     # 保存结果到单独的文件
     with open(filepath, 'w') as file:
-        json.dump(result, file, cls=NumpyEncoder)
+        json.dump(result, file, cls=NumpyEncoder, indent=4)
 
 if __name__ == '__main__':
     # process_prediction()
@@ -864,7 +874,7 @@ if __name__ == '__main__':
                     ret[key] = json.load(f)
 
     with open(f'{dir_path}/extractedFactsMap.json', 'w') as f:
-        json.dump(ret, f)
+        json.dump(ret, f, cls=NumpyEncoder, indent=4)
 
 
 # python process.py --dataset YAGO3-10 --model complex

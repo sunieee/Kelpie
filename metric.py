@@ -45,7 +45,6 @@ def process(file):
         print('processing', file, len(data))
 
     # return
-    
     base_prediction2data = {','.join(t['prediction']) :t for t in data if 'prediction' in t}
     base_prediction2data_subset = {k: v for k, v in base_prediction2data.items() if v['dMRR'] > 0.1}
     

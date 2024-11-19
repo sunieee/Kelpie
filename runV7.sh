@@ -6,11 +6,24 @@ run() {
     output_dir="out/${model}_${dataset}"
     mkdir -p "$output_dir"
 
-    CUDA_VISIBLE_DEVICES=${device} python3 process.py --dataset "$dataset" --model "$model" > "${output_dir}/process.log"  2>&1
+    CUDA_VISIBLE_DEVICES=${device} python3 processV2.py --dataset "$dataset" --model "$model" > "${output_dir}/process.log"  2>&1
 
-    CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric score --topN 4 > "${output_dir}/verify_score4.log"
+    # FB15k or FB15k-237
+
+    if [[ "$dataset" == "FB15k" || "$dataset" == "FB15k-237" ]]; then
+        CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric eXpath --topN 4 > "${output_dir}/verify_eXpath()4.log"
+    else
+        CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric eXpath --topN 4 --filter head > "${output_dir}/verify_eXpath(h)4.log"
+    fi
+    # CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric score --topN 4 > "${output_dir}/verify_score4.log"
     # CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric score --topN 4 --filter head > "${output_dir}/verify_score_h4.log"
     # CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric score --topN 4 --filter tail > "${output_dir}/verify_score_t4.log"
+
+    # baseline
+    # for metric in kelpie criage data_poisoning k1; do
+    #     echo "Processing Baseline ${model} ${dataset} ${metric}"
+    #     CUDA_VISIBLE_DEVICES=${device} python3 verify.py --dataset "$dataset" --model "$model" --metric "$metric" > "${output_dir}/verify_${metric}.log"
+    # done
 }
 
 
@@ -59,3 +72,4 @@ done
 wait  # 等待所有进程完成
 
 
+# python3 processV2.py --dataset FB15k --model complex > out/complex_FB15k/process.log

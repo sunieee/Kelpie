@@ -20,10 +20,15 @@ from scipy.sparse import lil_matrix
 CALCULATE_METRIC = True
 MODEL_CHOICES = ['complex', 'conve', 'transe']
 
+minSC = 0.01
+minHC = 0.01
+minSupp = 10
+
 parser = argparse.ArgumentParser(description="Model-agnostic tool for explaining link predictions")
 parser.add_argument('--dataset', choices=ALL_DATASET_NAMES, required=True, help="Dataset to use")
 parser.add_argument('--model', choices=MODEL_CHOICES, required=True, help="Model to use: complex, conve, transe")
 parser.add_argument('--alpha', type=float, default=0.01, help="Weight of the explanation")
+parser.add_argument('--ablation', type=str, default='1111', help="Ablation study: CP, Uc, Ud, EXP")
 # parser.add_argument('--max_hop', default=3, help="The length of max hop of paths")
 # 自适应max_length
 
@@ -32,6 +37,13 @@ args = parser.parse_args()
 dataset2triples = {}
 dataset_map = {}
 explanations = {}
+
+ablation = {
+    'CP': args.ablation[0] == '1',
+    'Uc': args.ablation[1] == '1',
+    'Ud': args.ablation[2] == '1',
+    'EXP': args.ablation[3] == '1',
+}
 
 # 注意一定要使用与kelpie相同的预处理方式
 def read_txt(triples_path, separator="\t"):
@@ -195,6 +207,7 @@ def calculate_rule_metrics_with_matrix(head_rel, body_relations, dataset):
         t = time.time()
         body_matrix = body_matrix.dot(next_matrix)  # 直接点乘
         body_matrix.data = np.ones_like(body_matrix.data)  # 二值化
+        body_matrix.setdiag(0)  # 去除对角线上的1
         # body_matrix = (body_matrix > 0).astype(int)
         print(f'time: {time.time() - t}')
 
@@ -219,8 +232,8 @@ def calculate_rule_metrics_with_matrix(head_rel, body_relations, dataset):
 
     ret = {
         'supp': supp,
-        'body': body_count,
-        'head': head_count,
+        '#body': body_count,
+        '#head': head_count,
         'HC': HC,
         'SC': SC
     }
@@ -232,100 +245,92 @@ def calculate_rule_metrics_with_matrix(head_rel, body_relations, dataset):
 
     return ret
 
-def calculate_Ud_metrics(Uc_head, Uc_body, dataset):
+def calculate_Ud_metrics(Ud_head, Ud_body, dataset):
+    data = read_triples_bidirection(dataset)
+    supp = 0
+    head_constant = Ud_head.split('(')[1][:-1]
+    head_constant = head_constant.replace('X,', '').replace(',Y', '')
+    head_rel = Ud_head.split('(')[0]
+    body_rel = Ud_body.split('(')[0]
+    head_count = 0
+
+    if '(X,' in Ud_body:
+        # head U_d
+        for f in data['relation_to_triples'][head_rel]:
+            h, _, t = f.split(',')
+            if t == head_constant:
+                head_count += 1
+                if len(data['head_to_triples'][h] & data['relation_to_triples'][body_rel]):
+                    supp += 1
+        # body_count = len(set([t.split(',')[0] + ',' + t.split(',')[1]  for t in data['relation_to_triples'][body_rel]]))
+    elif ',Y)' in Ud_body:
+        # tail U_d
+        for f in data['relation_to_triples'][head_rel]:
+            h, _, t = f.split(',')
+            if h == head_constant:
+                head_count += 1
+                if len(data['tail_to_triples'][t] & data['relation_to_triples'][body_rel]):
+                    supp += 1
+        # body_count = len(set([t.split(',')[1] + ',' + t.split(',')[2]  for t in data['relation_to_triples'][body_rel]]))
+
+    # body_count = len(set([t.split(',')[0] + ',' + t.split(',')[1]  for t in data['relation_to_triples'][body_rel]]))
+    body_count = len(data['relation_to_triples'][body_rel])
+    return {
+        'supp': supp,
+        '#body': body_count,
+        '#head': head_count,
+        'HC': supp / head_count if head_count > 0 else 0,
+        'SC': supp / body_count if body_count > 0 else 0
+    }
+
+
+def calculate_Uc_metrics(Uc_head, Uc_body, dataset):
     data = read_triples_bidirection(dataset)
     supp = 0
     head_constant = Uc_head.split('(')[1][:-1]
     head_constant = head_constant.replace('X,', '').replace(',Y', '')
     head_rel = Uc_head.split('(')[0]
-    rel = Uc_body.split('(')[0]
+    body_rel = Uc_body.split('(')[0]
+    body_constant = Uc_body.split('(')[1][:-1]
+    body_constant = body_constant.replace('X,', '').replace(',Y', '')
     head_count = 0
 
     if '(X,' in Uc_body:
-        # head U_d
-        rel = Uc_body.split('(')[0]
+        # head U_c
         for f in data['relation_to_triples'][head_rel]:
             h, _, t = f.split(',')
             if t == head_constant:
                 head_count += 1
                 valid = False
-                for ff in data['head_to_triples'][h]:
-                    if ff.split(',')[1] == rel:
+                for ff in data['head_to_triples'][h] & data['tail_to_triples'][body_constant]:
+                    if ff.split(',')[1] == body_rel:
                         valid = True
                         break
                 supp += valid
+        body_count = len(data['relation_to_triples'][body_rel] & data['tail_to_triples'][body_constant])
     elif ',Y)' in Uc_body:
-        # tail U_d
-        rel = Uc_body[1:]
+        # tail U_c
         for f in data['relation_to_triples'][head_rel]:
             h, _, t = f.split(',')
             if h == head_constant:
                 head_count += 1
                 valid = False
-                for ff in data['tail_to_triples'][t]:
-                    if ff.split(',')[1] == rel:
+                for ff in data['tail_to_triples'][t] & data['head_to_triples'][body_constant]:
+                    if ff.split(',')[1] == body_rel:
                         valid = True
                         break
                 supp += valid
-
-    body_count = len(set([t.split(',')[0] + ',' + t.split(',')[1]  for t in data['relation_to_triples'][rel]]))
+        body_count = len(data['relation_to_triples'][body_rel] & data['head_to_triples'][body_constant])
+    
     return {
         'supp': supp,
-        'body': body_count,
-        'head': head_count,
+        '#body': body_count,
+        '#head': head_count,
         'HC': supp / head_count if head_count > 0 else 0,
         'SC': supp / body_count if body_count > 0 else 0
     }
     
 
-def calculate_Uc_metrics(head_rel, body, dataset):
-    data = read_triples_bidirection(dataset)
-    supp = 0
-    head_count = 0
-    if head_rel[-1] == ')':
-        # head U_c
-        head_constant = head_rel.split('(')[1][:-1]
-        head_rel = head_rel.split('(')[0]
-        body_constant = body.split('(')[1][:-1]
-        rel = body.split('(')[0][:-1]
-        print('head Uc rule', head_rel, head_constant, rel, body_constant)
-        for f in data['relation_to_triples'][head_rel]:
-            h, _, t = f.split(',')
-            if t == head_constant:
-                head_count += 1
-                valid = False
-                for ff in data['head_to_triples'][h]:
-                    if ff.split(',')[1] == rel and ff.split(',')[2] == body_constant:
-                        valid = True
-                        break
-                supp += valid
-        body_count = len([f for f in data['relation_to_triples'][rel] if f.split(',')[2] == body_constant])
-    else:
-        # tail U_c
-        head_constant = head_rel.split(')')[0][1:]
-        head_rel = head_rel.split(')')[1]
-        body_constant = body.split(')')[0][1:]
-        rel = body.split(')')[1]
-        print('tail Uc rule', head_rel, head_constant, rel, body_constant)
-        for f in data['relation_to_triples'][head_rel]:
-            h, _, t = f.split(',')
-            if h == head_constant:
-                head_count += 1
-                valid = False
-                for ff in data['tail_to_triples'][t]:
-                    if ff.split(',')[1] == rel and ff.split(',')[0] == head_constant:
-                        valid = True
-                        break
-                supp += valid
-        body_count = len([f for f in data['relation_to_triples'][rel] if f.split(',')[0] == head_constant])
-
-    return {
-        'supp': supp,
-        'body': body_count,
-        'head': head_count,
-        'HC': supp / head_count if head_count > 0 else 0,
-        'SC': supp / body_count if body_count > 0 else 0
-    }
 
 def calculate_rule_metrics(head_rel, body, dataset):
     filename = body.replace('/', '_')
@@ -380,15 +385,12 @@ def calculate_rule_metrics(head_rel, body, dataset):
         supp += len(v.intersection(tails))
 
     # 计算 SC 和 HC
-    SC = supp / body_count if body_count > 0 else 0
-    HC = supp / head_count if head_count > 0 else 0
-
     ret = {
         'supp': supp,
-        'body': body_count,
-        'head': head_count,
-        'HC': HC,
-        'SC': SC
+        '#body': body_count,
+        '#head': head_count,
+        'HC': supp / head_count if head_count > 0 else 0,
+        'SC': supp / body_count if body_count > 0 else 0
     }
 
     print(f"Time: {time.time() - t}")
@@ -778,7 +780,6 @@ def calculateConfidence(ls):
         unconfidence *= 1 - l
     return 1 - unconfidence
 
-
 def calculatePrediction(prediction):
     print('# calculating prediction: ', prediction['prediction'])
     head = prediction['prediction'][0]
@@ -813,86 +814,82 @@ def calculatePrediction(prediction):
 
     # CP rules
     facts_map = {}
-    for body, v in predictionData['relation_path_map'].items():
-        headR = body.split(',')[0]
-        tailR = body.split(',')[-1]
-        Rh = 0
-        Rt = 0
-        for e in headEdges:
-            if e['relation'] == headR and 'score_reduction' in e:
-                Rh = e['score_reduction']
-        for e in tailEdges:
-            if e['relation'] == tailR and 'score_reduction' in e:
-                Rt = e['score_reduction']
 
-        ret = {
-            'id': body,
-            'length': len(v),
-            'paths': v,
-            'Rh': Rh,
-            'Rt': Rt
-        }
+    if ablation['CP']:
+        for body, paths in predictionData['relation_path_map'].items():
+            headR = body.split(',')[0]
+            tailR = body.split(',')[-1]
+            Rh = 0
+            Rt = 0
+            for e in headEdges:
+                if e['relation'] == headR and 'score_reduction' in e:
+                    Rh = e['score_reduction']
+            for e in tailEdges:
+                if e['relation'] == tailR and 'score_reduction' in e:
+                    Rt = e['score_reduction']
 
-        # Rh = 0 || Rt = 0 时不要紧，但是不能小于0
-        if Rh < 0 or Rt < 0 or (Rh == 0 and Rt == 0):
-            print('[calculatePrediction] low relevance rule, skipping: ', body, Rh, Rt)
-            continue
-
-        print('[calculatePrediction] calculating rule metrics ', relation, '<-', body)
-        ret.update(calculate_rule_metrics_with_matrix(relation, body, dataset))
-
-        if ret['SC'] < 0.01:
-            print('[calculatePrediction] low quality CP rule, skipping: ', relation, body, ret['SC'])
-            continue
-
-        all_facts_ix = set()
-        for p in ret['paths']:
-            # all_facts_ix.update(predictionData['paths'][p])
-            path_indexs = predictionData['paths'][p]
-            all_facts_ix.add(path_indexs[0])
-            all_facts_ix.add(path_indexs[-1])
-        # rule_weight = ret['SC'] / len(ret['id'].split(','))
-        rule_weight = ret['SC']
-
-        for t in all_facts_ix:
-            fact_in_path_head = 0
-            fact_in_path_tail = 0
-
-            for p in ret['paths']:
-                if predictionData['paths'][p][0] == t:
-                    fact_in_path_head += 1
-                if predictionData['paths'][p][-1] == t:
-                    fact_in_path_tail += 1
-
-            fact_in_rule_head_proportion = fact_in_path_head / len(ret['paths'])
-            fact_in_rule_tail_proportion = fact_in_path_tail / len(ret['paths'])
-            fact_importance = (fact_in_rule_head_proportion * Rh + fact_in_rule_tail_proportion * Rt) / (Rh + Rt)
-
-            if fact_importance <= 0:
-                print('[calculatePrediction] low importance fact in rule, skipping: ', t, fact_importance)
+            # Rh = 0 || Rt = 0 时不要紧，但是不能小于0
+            if Rh < 0 or Rt < 0 or (Rh == 0 and Rt == 0):
+                print('[calculatePrediction] low relevance rule, skipping: ', body, Rh, Rt)
                 continue
-            
-            triple = predictionData['triples'][t]
-            if triple not in facts_map:
-                facts_map[triple] = {
-                    'ix': t,
-                    'triple': triple,
-                }
 
-            facts_map[triple].setdefault('rules', []).append({
-                'id': ret['id'],
-                'rule': relation + '<-' + body,
-                'head_proportion': fact_in_rule_head_proportion,
-                'tail_proportion': fact_in_rule_tail_proportion,
-                'Rh': ret['Rh'],
-                'Rt': ret['Rt'],
-                'SC': ret['SC'],
-                'importance': fact_importance,
-                'score': fact_importance * rule_weight,
-                'type': 'CP'
-            })
-            facts_map[triple]['score'] = facts_map[triple].get('score', 0) + fact_importance * rule_weight
+            print('[calculatePrediction] calculating rule metrics ', relation, '<-', body)
+            ret = calculate_rule_metrics_with_matrix(relation, body, dataset)
 
+            if ret['SC'] < minSC or ret['HC'] < minHC: #  or ret['supp'] < minSupp:
+                print('[calculatePrediction] low quality CP rule, skipping: ', relation, body, ret['SC'])
+                continue
+
+            all_facts_ix = set()
+            for p in paths:
+                # all_facts_ix.update(predictionData['paths'][p])
+                path_indexs = predictionData['paths'][p]
+                all_facts_ix.add(path_indexs[0])
+                all_facts_ix.add(path_indexs[-1])
+            # rule_weight = ret['SC'] / len(ret['id'].split(','))
+            rule_weight = ret['SC']
+
+            for t in all_facts_ix:
+                fact_in_path_head = 0
+                fact_in_path_tail = 0
+
+                for p in paths:
+                    if predictionData['paths'][p][0] == t:
+                        fact_in_path_head += 1
+                    if predictionData['paths'][p][-1] == t:
+                        fact_in_path_tail += 1
+
+                fact_in_rule_head_proportion = fact_in_path_head / len(paths)
+                fact_in_rule_tail_proportion = fact_in_path_tail / len(paths)
+                fact_importance = (fact_in_rule_head_proportion * Rh + fact_in_rule_tail_proportion * Rt) / (Rh + Rt)
+
+                if fact_importance <= 0:
+                    print('[calculatePrediction] low importance fact in rule, skipping: ', t, fact_importance)
+                    continue
+                
+                triple = predictionData['triples'][t]
+                if triple not in facts_map:
+                    facts_map[triple] = {
+                        'ix': t,
+                        'triple': triple,
+                    }
+
+                ratio = ret['supp'] / (ret['supp'] + minSupp)
+                score = fact_importance * rule_weight * ratio
+                facts_map[triple].setdefault('rules', []).append({
+                    'type': 'CP',
+                    'body': body,
+                    'head': relation,
+                    'Rh': Rh,
+                    'Rt': Rt,
+                    'head_proportion': fact_in_rule_head_proportion,
+                    'tail_proportion': fact_in_rule_tail_proportion,
+                    'importance': fact_importance,
+                    'score': score,
+                    **ret
+                })
+                facts_map[triple].setdefault('scores', []).append(score)
+                # facts_map[triple]['score'] = facts_map[triple].get('score', 0) + fact_importance * rule_weight
 
     data = search_ht_relation(pred, dataset)
     # Ud + Uc rules
@@ -901,74 +898,129 @@ def calculatePrediction(prediction):
             continue
         if explanation['perspective'] == 'head':
             triples = data['head_relation2triples'][explanation['relation']]
-            body = explanation['relation'] + ','
-            Uc_head = relation + '(' + tail + ')'
+            Ud_body = explanation['relation'] + '(X,Z)' 
+            rule_head = relation + '(X,' + tail + ')'
         else:
             triples = data['tail_relation2triples'][explanation['relation']]
-            body = ',' + explanation['relation']
-            Uc_head = '(' + head + ')' + relation
+            Ud_body = explanation['relation'] + '(Z,Y)'
+            rule_head = relation + '(' + head + ',Y)'
 
-        if explanation['score_reduction'] < 0:
-            print('[calculatePrediction] low relevance rule, skipping: ', explanation['relation'], explanation['score_reduction'])
-            continue
+        # 这个感觉不需要通过score_reduction进行过滤，直接全部计算
+        # if explanation['score_reduction'] < 0:
+        #     print('[calculatePrediction] low relevance rule, skipping: ', explanation['relation'], explanation['score_reduction'])
+        #     continue
 
         # Uc rules
-        for triple in triples:
-            h, r, t = triple.split(',')
-            Uc_body = r + '(' + t + ')' if explanation['perspective'] == 'head' else '(' + h + ')' + r
-            ret = calculate_Uc_metrics(Uc_head, Uc_body, dataset)
-            if ret['SC'] < 0.01:
-                print('[calculatePrediction] low quality Uc rule, skipping: ', Uc_head, Uc_body, ret['SC'])
-                continue
+        if ablation['Uc']:
+            for triple in triples:
+                h, r, t = triple.split(',')
+                Uc_body = r + '(X,' + t + ')' if explanation['perspective'] == 'head' else r + '(' + h + ',Y)'
+                ret = calculate_Uc_metrics(rule_head, Uc_body, dataset)
+                if ret['SC'] < minSC or ret['HC'] < minHC: #  or ret['supp'] < minSupp:
+                    print('[calculatePrediction] low quality Uc rule, skipping: ', rule_head, Uc_body, ret['SC'])
+                    continue
 
-            if triple not in facts_map:
-                facts_map[triple] = {
-                    'ix': -1,
-                    'triple': triple
-                }
-            facts_map[triple].setdefault('rules', []).append({
-                'id': Uc_body,
-                'rule': Uc_head + '<-' + Uc_body,
-                'type': 'Uc',
-                'score': ret['SC'],
-                **ret
-            })
-            facts_map[triple]['score'] = facts_map[triple].get('score', 0) + ret['SC']
+                if triple not in facts_map:
+                    facts_map[triple] = {
+                        'ix': -1,
+                        'triple': triple
+                    }
+                ratio = ret['supp'] / (ret['supp'] + minSupp)
+                score = ret['SC'] * ratio
+                facts_map[triple].setdefault('rules', []).append({
+                    'type': 'Uc',
+                    'body': Uc_body,
+                    'head': rule_head,
+                    'score': score,
+                    **ret
+                })
+                # facts_map[triple]['score'] = facts_map[triple].get('score', 0) + ret['SC']
+                facts_map[triple].setdefault('scores', []).append(score)
 
         # Ud rules
-        ret = calculate_Ud_metrics(relation, body, dataset)
-        if ret['SC'] < 0.01:
-            print('[calculatePrediction] low quality Ud rule, skipping: ', relation, body, ret['SC'])
-            continue
+        if ablation['Ud']:
+            ret = calculate_Ud_metrics(rule_head, Ud_body, dataset)
+            if ret['SC'] < minSC or ret['HC'] < minHC: #  or ret['supp'] < minSupp:
+                print('[calculatePrediction] low quality Ud rule, skipping: ', rule_head, Ud_body, ret['SC'])
+                continue
 
-        assert len(triples)  == explanation['length']
-        for triple in triples:
-            # print(triple)
-            if triple not in facts_map:
-                facts_map[triple] = {
-                    'ix': -1,
-                    'triple': triple
-                }
-            fact_importance = 1 / len(triples)
-            score = ret['SC'] * fact_importance
-            facts_map[triple].setdefault('rules', []).append({
-                'id': body,
-                'rule': relation + '<-' + body,
-                'explanation': explanation,
-                'type': 'Ud',
-                'score': score,
-                **ret
-            })
-            facts_map[triple]['score'] = facts_map[triple].get('score', 0) + score
+            assert len(triples)  == explanation['length']
+            for triple in triples:
+                # print(triple)
+                if triple not in facts_map:
+                    facts_map[triple] = {
+                        'ix': -1,
+                        'triple': triple
+                    }
+                fact_importance = 1 / len(triples)
+                ratio = ret['supp'] / (ret['supp'] + minSupp)
+                score = ret['SC'] * fact_importance * ratio
+                facts_map[triple].setdefault('rules', []).append({
+                    'type': 'Ud',
+                    'body': Ud_body,
+                    'head': rule_head,
+                    'explanation': explanation,
+                    'score': score,
+                    **ret
+                })
+                # facts_map[triple]['score'] = facts_map[triple].get('score', 0) + score
+                facts_map[triple].setdefault('scores', []).append(score)
+
+    if ablation['EXP']:
+        rel2explanation = {t['relation'] + '-' + t['perspective'] :t for t in prediction2explanations[pred]}
+        if rel2explanation['all-head']['score_reduction'] < 0 \
+            and rel2explanation['all-tail']['score_reduction'] < 0:
+            # 两个all都是负的，那么就直接随机选取，facts较少, relation较少的
+            for perspective in ['head', 'tail']:
+                explanation = rel2explanation[f'all-{perspective}']
+                relation2triples = data[f'{perspective}_relation2triples']
+                for triples in relation2triples.values():
+                    for triple in triples:
+                        if triple not in facts_map:
+                            facts_map[triple] = {
+                                'ix': -2,
+                                'triple': triple,
+                                'rules': [],
+                            }
+                        score = 1 / explanation['length'] / len(triples)
+                        facts_map[triple].setdefault('explanations', []).append(explanation)
+                        # facts_map[triple]['score'] = facts_map[triple].get('score', 0) + score
+                        facts_map[triple].setdefault('scores', []).append(score)
+
+        for explanation in prediction2explanations[pred]:
+            if explanation['relation'] == 'all':
+                continue
+            if explanation['perspective'] == 'head':
+                triples = data['head_relation2triples'][explanation['relation']]
+            else:
+                triples = data['tail_relation2triples'][explanation['relation']]
+            for triple in triples:
+                # print(triple)
+                if triple not in facts_map:
+                    facts_map[triple] = {
+                        'ix': -1,
+                        'triple': triple,
+                        'rules': [],
+                    }
+
+                # Leaky Relu score_reduction
+                # reduction = max(explanation['score_reduction'], 0.1 * explanation['score_reduction']) / 100
+                reduction = explanation['score_reduction'] / 100
+                score = reduction / len(explanation['triples'])
+                explanation['score'] = score
+                facts_map[triple].setdefault('explanations', []).append(explanation)
+                # facts_map[triple]['score'] = facts_map[triple].get('score', 0) + score
+                facts_map[triple].setdefault('scores', []).append(score)
 
     for triple in facts_map:
         facts_map[triple]['rules'].sort(key=lambda x: x['score'], reverse=True)
+        facts_map[triple]['score'] = calculateConfidence(facts_map[triple]['scores'])
 
     extractedFacts = list(facts_map.values())
     extractedFacts.sort(key=lambda x: x['score'], reverse=True)
     # print(extractedFacts)
     return extractedFacts[:30]
-    
+
 def geometricAverage(ls):
     return np.prod(ls) ** (1 / len(ls))
 
@@ -984,6 +1036,12 @@ def geometricAverage(ls):
 
 
 def process_prediction(prediction):
+    if isinstance(prediction, str):
+        for p in predictions:
+            if ','.join(p['prediction']) == prediction:
+                prediction = p
+                break
+
     pred = ','.join(prediction['prediction'])
     result = calculatePrediction(prediction)
     
@@ -994,12 +1052,14 @@ def process_prediction(prediction):
     
     # 保存结果到单独的文件
     with open(filepath, 'w') as file:
-        json.dump(result, file, cls=NumpyEncoder)
+        json.dump(result, file, cls=NumpyEncoder, indent=4)
 
 if __name__ == '__main__':
     # process_prediction()
-    process_prediction(predictions[45])
-    os._exit(0)
+    # process_prediction(predictions[55])
+    # print(predictions[55]['prediction'])
+    # # process_prediction('13108841,_hyponym,11653904')
+    # os._exit(0)
 
     # 创建多进程池，多线程真的不行
     max_workers = int(os.cpu_count() * 0.8)
@@ -1020,8 +1080,9 @@ if __name__ == '__main__':
                 if key in all_keys:
                     ret[key] = json.load(f)
 
-    with open(f'{dir_path}/extractedFactsMap.json', 'w') as f:
-        json.dump(ret, f)
+    suffix = '_' + args.ablation if  args.ablation != '1111' else ''
+    with open(f'{dir_path}/extractedFactsMap{suffix}.json', 'w') as f:
+        json.dump(ret, f, cls=NumpyEncoder, indent=4)
 
 
 # python process.py --dataset YAGO3-10 --model complex
