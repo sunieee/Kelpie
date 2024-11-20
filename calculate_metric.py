@@ -26,7 +26,7 @@ gx = pd.DataFrame(0, columns=folders, index=['criage', 'data_poisoning', 'k1', '
 def setting2path(folder, setting):
     suffix = setting
     if 'WN18' in folder:
-        if setting in ['eXpath(0111)', 'eXpath(1011)', 'eXpath(1101)', 'eXpath(1110)', 'eXpath(1000)']:
+        if setting in ['eXpath(011)', 'eXpath(101)', 'eXpath(110)', 'eXpath(100)']:
             suffix = setting.replace('(', '(h')
         if setting == 'eXpath':
             suffix = 'eXpath(h)'
@@ -54,7 +54,7 @@ def process(folder):
 
     for setting in ['criage', 'data_poisoning', 'k1', 'AnyBurlAttack', 'kelpie', \
                     'eXpath()', 'eXpath(h)', 'eXpath(t)', 'eXpath', \
-                    'eXpath(0111)', 'eXpath(1011)', 'eXpath(1101)', 'eXpath(1110)', 'eXpath(1000)', 'eXpath1',
+                    'eXpath(011)', 'eXpath(101)', 'eXpath(110)', 'eXpath(100)', 'eXpath1',
                     'eXpath1+criage', 'eXpath1+data_poisoning', 'eXpath1+k1', 'eXpath+kelpie',
                     'k1+criage', 'k1+data_poisoning', 'criage+data_poisoning']:
         print('processing', folder, setting)
@@ -162,6 +162,17 @@ def process(folder):
 
 for folder in folders:
     process(folder)
+
+# AVG = sum / notnull_count
+rx['AVG'] = rx.mean(axis=1)
+rx_h['AVG'] = rx_h.mean(axis=1)
+rx_t['AVG'] = rx_t.mean(axis=1)
+rx_subset['AVG'] = rx_subset.mean(axis=1)
+rx_subset_h['AVG'] = rx_subset_h.mean(axis=1)
+rx_subset_t['AVG'] = rx_subset_t.mean(axis=1)
+fx['AVG'] = fx.mean(axis=1)
+gx['AVG'] = gx.mean(axis=1)
+
 
 rx.to_csv(f'{base_dir}/rx.csv')
 rx_subset.to_csv(f'{base_dir}/rx_subset.csv')

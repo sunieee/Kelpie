@@ -8,7 +8,7 @@ run() {
     output_dir="out/${model}_${dataset}"
     mkdir -p "$output_dir"
 
-    # CUDA_VISIBLE_DEVICES=${device} python3 processV2.py --dataset "$dataset" --model "$model" > "${output_dir}/process.log"  2>&1
+    CUDA_VISIBLE_DEVICES=${device} python3 processV2.py --dataset "$dataset" --model "$model" > "${output_dir}/process.log"  2>&1
 
     # FB15k or FB15k-237
 

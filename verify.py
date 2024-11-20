@@ -193,8 +193,6 @@ elif os.path.exists(map_path):
 elif os.path.exists('output.json'):
     with open("output.json", "r") as input_file:
         data = json.load(input_file)
-    
-
 
 # Define model-specific parameters
 if args.model == 'complex':
@@ -319,15 +317,10 @@ class NumpyEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-suffix = f'_{args.filter[0]}' if args.filter != 'none' else ''
-with open(f"out/{args.model}_{args.dataset}/output_end_to_end_{args.metric}{suffix}{args.topN}.json", "w") as outfile:
-    json.dump(data, outfile, indent=4, cls=NumpyEncoder)
-
 print('Required time: ', time.time() - t, ' seconds')
-
 mrr, h1, h10, mr = Evaluator(model=model).evaluate(samples=dataset.test_samples, write_output=False)
 new_mrr, new_h1, new_h10, new_mr = Evaluator(model=new_model).evaluate(samples=dataset.test_samples, write_output=False)
-data.append({
+print({
     'mrr': mrr,
     'h1': h1,
     'h10': h10,
@@ -345,6 +338,8 @@ if args.ablation != '1111':
     suffix += args.ablation
 if args.metric == 'eXpath':
     suffix = '(' + suffix + ')'
+filename = f"out/{args.model}_{args.dataset}/output_end_to_end_{args.metric}{suffix}{args.topN}.json"
+print('output file:', filename)
 
-with open(f"out/{args.model}_{args.dataset}/output_end_to_end_{args.metric}{suffix}{args.topN}.json", "w") as outfile:
+with open(filename, "w") as outfile:
     json.dump(data, outfile, indent=4, cls=NumpyEncoder)
